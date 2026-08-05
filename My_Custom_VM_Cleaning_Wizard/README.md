@@ -11,7 +11,7 @@ An automated, cross-platform CLI utility suite designed to clean virtual system 
 
 ## 📁 Repository Structure
 ```text
-Disk_CleanUp_Project/
+My_Custom_VM_Cleaning_Wizard/
 ├── autorun.sh           # Linux Master Launcher
 ├── autorun.bat          # Windows Master Launcher (Double-Clickable)
 ├── vm-space-wizard.sh   # Stage 1: Linux Cleanup & Storage Engine
