@@ -1,4 +1,5 @@
 @echo off
+chcp 65001 >nul
 TITLE VM Space Wizard - Master Launcher (Windows Host)
 
 :: ============================================================================
@@ -11,18 +12,18 @@ if %errorLevel% neq 0 (
     exit /b
 )
 
-:: Lock directory to Desktop folder where autorun.bat sits
+:: Lock working directory to the folder where autorun.bat resides
 cd /d "%~dp0"
 cls
 
 echo ====================================================================
-echo          🧙‍♂️ VM SPACE WIZARD - MASTER LAUNCHER (WINDOWS)
+echo          [WIZARD] VM SPACE WIZARD - MASTER LAUNCHER (WINDOWS)
 echo ====================================================================
 echo.
 echo Which stage of the cleanup process are you currently executing?
 echo.
-echo   [1] Stage 1: Linux System Cleanup & Storage Offloading
-echo   [2] Stage 2: Windows Host VDI Compaction (RUN HERE)
+echo   [1] Stage 1: Linux System Cleanup
+echo   [2] Stage 2: Windows Host VDI / VMDK Compaction (RUN HERE)
 echo   [3] Exit
 echo ====================================================================
 set /p CHOICE="Select option [1-3]: "
@@ -46,35 +47,15 @@ if "%CHOICE%"=="1" (
 
 if "%CHOICE%"=="2" (
     cls
-    echo ====================================================================
-    echo                   [!] STAGE 2 PREREQUISITE CHECK
-    echo ====================================================================
-    echo  Have you already completed Stage 1 inside your Linux VM?
-    echo  (Cleaning system caches + running the Zero-Fill step)
+    echo [i] Launching PowerShell Compaction Module...
     echo.
-    echo  [Y] Yes - Stage 1 is complete and Linux VM is shut down.
-    echo  [N] No  - I need to run Stage 1 inside Linux first.
-    echo ====================================================================
-    set /p CONFIRM="Have you completed Stage 1? (Y/N): "
     
-    if /I "%CONFIRM%"=="Y" (
-        cls
-        echo [i] Launching PowerShell Compaction Module...
-        echo.
-        
-        if exist "%~dp0vm-space-wizard.ps1" (
-            :: Execute PowerShell interactively inside the current CMD window
-            powershell.exe -NoExit -ExecutionPolicy Bypass -Command "& '%~dp0vm-space-wizard.ps1'"
-        ) else (
-            echo.
-            echo [!] ERROR: Could not find 'vm-space-wizard.ps1' on your Desktop!
-            echo [!] Please make sure both 'autorun.bat' and 'vm-space-wizard.ps1' are in the same Desktop folder.
-            echo.
-            pause
-        )
+    if exist "%~dp0vm-space-wizard.ps1" (
+        powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0vm-space-wizard.ps1"
     ) else (
         echo.
-        echo [!] Please start your Linux VM, run Stage 1 first, then return here.
+        echo [!] ERROR: Could not find 'vm-space-wizard.ps1' in this directory!
+        echo [!] Please ensure 'autorun.bat' and 'vm-space-wizard.ps1' are in the same folder.
         pause
     )
     goto end

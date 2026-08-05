@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # ==============================================================================
-# TOOL NAME:    vm-space-wizard.sh
+# TOOL NAME:    vm-space-wizard.sh (V2.0 Universal Release)
 # AUTHOR:       Saleem (Open Source DevOps/Sec Contributor)
 # DESCRIPTION:  Universal Linux VM space optimization & disk offloading wizard.
 # COMPATIBILITY: Debian, Ubuntu, Kali Linux, CentOS, RHEL, Fedora, Rocky Linux
+# HYPERVISORS:   Oracle VirtualBox & VMware Workstation / Player / Fusion
 # ==============================================================================
 
 set -e
@@ -30,7 +31,7 @@ pause() {
 
 show_virtualbox_instructions() {
     echo -e "\n${CYAN}====================================================================${NC}"
-    echo -e "${YELLOW}${BOLD} 📌 HOW TO ATTACH A SECONDARY HARD DRIVE IN VIRTUALBOX${NC}"
+    echo -e "${YELLOW}${BOLD} 📌 HOW TO ATTACH A SECONDARY HARD DRIVE IN ORACLE VIRTUALBOX${NC}"
     echo -e "${CYAN}====================================================================${NC}"
     echo -e " If you have not created or attached a secondary VDI drive yet:\n"
     echo -e "  1. Shut down this Linux Virtual Machine."
@@ -47,7 +48,38 @@ show_virtualbox_instructions() {
     echo -e "${CYAN}====================================================================${NC}"
 }
 
-# --- Module 1: Granular Container Pruning ---
+show_vmware_instructions() {
+    echo -e "\n${CYAN}====================================================================${NC}"
+    echo -e "${YELLOW}${BOLD} 📌 HOW TO ATTACH A SECONDARY HARD DRIVE IN VMWARE WORKSTATION / PLAYER${NC}"
+    echo -e "${CYAN}====================================================================${NC}"
+    echo -e " If you have not created or attached a secondary VMDK drive yet:\n"
+    echo -e "  1. Shut down this Linux Virtual Machine."
+    echo -e "  2. In VMware, right-click your Virtual Machine -> 'Settings'."
+    echo -e "  3. On the Hardware tab, click 'Add...' at the bottom."
+    echo -e "  4. Select 'Hard Disk' -> Click Next."
+    echo -e "  5. Select Disk Type: 'SCSI' or 'SATA' (Recommended) -> Click Next."
+    echo -e "  6. Choose 'Create a new virtual disk' -> Click Next."
+    echo -e "  7. Specify maximum capacity (e.g., 200 GB or 500 GB)."
+    echo -e "  8. Select 'Store virtual disk as a single file' -> Click Next."
+    echo -e "  9. Browse to save location on your host PC and click 'Finish'."
+    echo -e " 10. Click 'OK' to save VM settings, boot up Linux, and re-run this wizard!"
+    echo -e "${CYAN}====================================================================${NC}"
+}
+
+show_attachment_guidelines() {
+    echo -e "\n${YELLOW}Would you like guidelines on how to attach a secondary disk?${NC}"
+    echo -e "  ${GREEN}[1]${NC} Show Oracle VirtualBox Instructions"
+    echo -e "  ${GREEN}[2]${NC} Show VMware Workstation / Player Instructions"
+    echo -e "  ${GREEN}[3]${NC} Skip Guidelines"
+    read -p "Select choice [1-3]: " GUIDE_CHOICE
+
+    case $GUIDE_CHOICE in
+        1) show_virtualbox_instructions ;;
+        2) show_vmware_instructions ;;
+        *) echo "Skipping guidelines..." ;;
+    esac
+}
+
 clean_containers() {
     while true; do
         show_header
@@ -144,7 +176,7 @@ setup_secondary_disk() {
 
     if [[ -z "$TARGET_DISK" ]] || [[ ! -b "$TARGET_DISK" ]]; then
         echo -e "\n${RED}[!] Error: No valid block device specified!${NC}"
-        show_virtualbox_instructions
+        show_attachment_guidelines
         pause
         return
     fi
@@ -218,9 +250,9 @@ EOF
 
 prepare_vdi_compact() {
     show_header
-    echo -e "${YELLOW}[+] Preparing System for Windows Host VDI Compaction...${NC}\n"
-    echo "This process fills all unused disk blocks with zeros so VirtualBox"
-    echo "can reclaim physical disk space on your Windows host PC."
+    echo -e "${YELLOW}[+] Preparing System for Host Disk Compaction...${NC}\n"
+    echo "This process fills all unused disk blocks with zeros so your host hypervisor"
+    echo "can reclaim physical disk space on your Windows PC."
     echo -e "${RED}${BOLD}Note: Disk utilization will reach 100% temporarily during zero-fill.${NC}\n"
 
     read -p "Start Zero-Fill sequence? (y/N): " CONFIRM
@@ -233,8 +265,8 @@ prepare_vdi_compact() {
         echo -e "${GREEN}${BOLD}     STAGE 1 COMPLETE: LINUX SYSTEM ZERO-FILLED & PREPARED!        ${NC}"
         echo -e "${CYAN}====================================================================${NC}"
         echo -e "To reclaim physical storage on your Windows PC hard drive:\n"
-        echo -e "  1. Open ${BOLD}Windows PowerShell${NC} as Administrator."
-        echo -e "  2. Run the companion script: ${GREEN}${BOLD}vm-space-wizard${NC}\n"
+        echo -e "  1. Open ${BOLD}Windows PowerShell${NC} as Administrator (or double-click autorun.bat)."
+        echo -e "  2. Run Stage 2 to compact your ${GREEN}${BOLD}VirtualBox (.vdi)${NC} or ${GREEN}${BOLD}VMware (.vmdk)${NC} disks.\n"
         echo -e "The VM will now gracefully shut down in 10 seconds..."
         echo -e "${CYAN}====================================================================${NC}"
         
@@ -253,7 +285,7 @@ while true; do
     echo -e "  ${GREEN}[1]${NC} Free Up Container Space (Customizable Docker & Podman Prune)"
     echo -e "  ${GREEN}[2]${NC} Free Up OS System Space (Clean Package Caches & Logs)"
     echo -e "  ${GREEN}[3]${NC} Offload Docker & Podman Storage to Secondary HDD Drive"
-    echo -e "  ${GREEN}[4]${NC} FULL CLEANUP + Zero-Fill for Host VDI Compaction (Stage 1)"
+    echo -e "  ${GREEN}[4]${NC} FULL CLEANUP + Zero-Fill for Host Disk Compaction (Stage 1)"
     echo -e "  ${GREEN}[5]${NC} Exit"
     echo -e "\n===================================================================="
     read -p "Enter choice [1-5]: " CHOICE
