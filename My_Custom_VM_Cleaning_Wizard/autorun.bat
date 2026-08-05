@@ -7,7 +7,7 @@ TITLE VM Space Wizard - Master Launcher (Windows Host)
 :: ============================================================================
 net session >nul 2>&1
 if %errorLevel% neq 0 (
-    echo Requesting Administrative Privileges for VDI Compaction...
+    echo Requesting Administrative Privileges for VDI / VMDK Compaction...
     powershell -Command "Start-Process '%~f0' -Verb RunAs"
     exit /b
 )
@@ -50,12 +50,16 @@ if "%CHOICE%"=="2" (
     echo [i] Launching PowerShell Compaction Module...
     echo.
     
-    if exist "%~dp0vm-space-wizard.ps1" (
+    :: Check for vm-space-wizard.ps1 in the modules/ directory first (V2.1 Modular Path)
+    if exist "%~dp0modules\vm-space-wizard.ps1" (
+        powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0modules\vm-space-wizard.ps1"
+    ) else if exist "%~dp0vm-space-wizard.ps1" (
+        :: Fallback check for root directory path
         powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0vm-space-wizard.ps1"
     ) else (
         echo.
-        echo [!] ERROR: Could not find 'vm-space-wizard.ps1' in this directory!
-        echo [!] Please ensure 'autorun.bat' and 'vm-space-wizard.ps1' are in the same folder.
+        echo [!] ERROR: Could not find 'vm-space-wizard.ps1'!
+        echo [!] Please ensure 'vm-space-wizard.ps1' is located inside the 'modules\' folder.
         pause
     )
     goto end

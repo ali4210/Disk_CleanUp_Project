@@ -1,35 +1,41 @@
 # ==============================================================================
-# TOOL NAME:    vm-space-wizard.ps1 (V2.0 Universal Master Entry)
+# TOOL NAME:    vm-space-wizard.ps1 (V2.1 Universal Master Entry)
 # AUTHOR:       Saleem (Open Source DevOps/Sec Contributor)
 # DESCRIPTION:  Cross-Platform Host Compaction for VirtualBox and VMware.
 # ==============================================================================
 
-# Lock execution context to the script directory
+# Lock execution context to the directory where this script actually lives
 $ScriptDir = $PSScriptRoot
 if (-not $ScriptDir) {
     $ScriptDir = Split-Path -Parent $MyInvocation.MyCommand.Definition
 }
 
-$VBoxModule = Join-Path -Path $ScriptDir -ChildPath "modules\virtualbox-engine.ps1"
-$VMwareModule = Join-Path -Path $ScriptDir -ChildPath "modules\vmware-engine.ps1"
+# --- Load Engine Modules (Located in the same directory as this script) ---
+$VBoxModule = Join-Path -Path $ScriptDir -ChildPath "virtualbox-engine.ps1"
+$VMwareModule = Join-Path -Path $ScriptDir -ChildPath "vmware-engine.ps1"
 
-# --- Load Engine Modules ---
 if (Test-Path -Path $VBoxModule) {
     . $VBoxModule
 } else {
-    Write-Host "[!] Error: Could not locate VirtualBox module at $VBoxModule" -ForegroundColor Red
+    # Fallback check if script is executed from parent root
+    $VBoxModule = Join-Path -Path $ScriptDir -ChildPath "modules\virtualbox-engine.ps1"
+    if (Test-Path -Path $VBoxModule) { . $VBoxModule }
+    else { Write-Host "[!] Error: Could not locate virtualbox-engine.ps1" -ForegroundColor Red }
 }
 
 if (Test-Path -Path $VMwareModule) {
     . $VMwareModule
 } else {
-    Write-Host "[!] Error: Could not locate VMware module at $VMwareModule" -ForegroundColor Red
+    # Fallback check if script is executed from parent root
+    $VMwareModule = Join-Path -Path $ScriptDir -ChildPath "modules\vmware-engine.ps1"
+    if (Test-Path -Path $VMwareModule) { . $VMwareModule }
+    else { Write-Host "[!] Error: Could not locate vmware-engine.ps1" -ForegroundColor Red }
 }
 
 function Show-Header {
     Clear-Host
     Write-Host "====================================================================" -ForegroundColor Cyan
-    Write-Host "  [WIZARD] VM SPACE WIZARD V2.0 - UNIVERSAL HYPERVISOR COMPACTOR    " -ForegroundColor Cyan
+    Write-Host "  [WIZARD] VM SPACE WIZARD V2.1 - UNIVERSAL HYPERVISOR COMPACTOR    " -ForegroundColor Cyan
     Write-Host "====================================================================" -ForegroundColor Cyan
 }
 
@@ -70,7 +76,7 @@ while ($true) {
                 if (Get-Command Compact-VBoxDisks -ErrorAction SilentlyContinue) {
                     Compact-VBoxDisks
                 } else {
-                    Write-Host "[!] Function 'Compact-VBoxDisks' is not loaded. Verify modules\virtualbox-engine.ps1 exists!" -ForegroundColor Red
+                    Write-Host "[!] Function 'Compact-VBoxDisks' is not loaded. Verify virtualbox-engine.ps1 exists!" -ForegroundColor Red
                 }
                 Pause-Console
             }
@@ -117,7 +123,7 @@ while ($true) {
                 if (Get-Command Shrink-VMwareDisks -ErrorAction SilentlyContinue) {
                     Shrink-VMwareDisks
                 } else {
-                    Write-Host "[!] Function 'Shrink-VMwareDisks' is not loaded. Verify modules\vmware-engine.ps1 exists!" -ForegroundColor Red
+                    Write-Host "[!] Function 'Shrink-VMwareDisks' is not loaded. Verify vmware-engine.ps1 exists!" -ForegroundColor Red
                 }
                 Pause-Console
             }
