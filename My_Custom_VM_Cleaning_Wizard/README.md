@@ -46,8 +46,7 @@ Disk_CleanUp_Project/
     ├── virtualbox-engine.ps1    # VirtualBox VDI & Snapshot Engine
     └── vmware-engine.ps1        # VMware VMDK Shrink Engine
 
----
-
+```
 ## 🛠️ Complete Workflow & Usage
 
 ### 📍 Stage 1: Inside Your Linux Virtual Machine
