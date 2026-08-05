@@ -32,20 +32,18 @@ This dangerous practice breaks the snapshot registry chain, corrupting the virtu
 
 ---
 
-## 📁 Repository Structure
-
 ```text
 Disk_CleanUp_Project/
-├── autorun.sh                   # Universal Master Launcher (Linux)
-├── autorun.bat                  # Universal Master Launcher (Windows)
-├── README.md                    # Project Documentation
-├── linux/
-│   └── vm-space-wizard.sh       # Stage 1: Linux System & Container Engine
-└── modules/
-    ├── vm-space-wizard.ps1      # Stage 2: Windows Master Entry Point
-    ├── virtualbox-engine.ps1    # VirtualBox VDI & Snapshot Engine
-    └── vmware-engine.ps1        # VMware VMDK Shrink Engine
-
+└── My_Custom_VM_Cleaning_Wizard/
+    ├── autorun.sh                   # Universal Master Launcher (Linux)
+    ├── autorun.bat                  # Universal Master Launcher (Windows)
+    ├── README.md                    # Project Documentation
+    ├── linux/
+    │   └── vm-space-wizard.sh       # Stage 1: Linux System & Container Engine
+    └── modules/
+        ├── vm-space-wizard.ps1      # Stage 2: Windows Master Entry Point
+        ├── virtualbox-engine.ps1    # VirtualBox VDI & Snapshot Engine
+        └── vmware-engine.ps1        # VMware VMDK Shrink Engine
 ```
 ## 🛠️ Complete Workflow & Usage
 
