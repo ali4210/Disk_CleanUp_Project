@@ -17,11 +17,69 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-show_header() {
+TARGET_REPO_DIR="$(pwd)"
+
+show_banner() {
     clear
+    echo -e "${CYAN}${BOLD}"
+    cat << "EOF"
+WIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARD
+WIZARDWIZARDWIZARDWIZARDWIZAR..::::::::::::::::..IZARDWIZARDWIZARDWIZARDWIZARD
+WIZARDWIZARDWIZARDWIZARD.::::::::::::::::::::::::::::.WIZARDWIZARDWIZARDWIZARD
+WIZARDWIZARDWIZARDWI.:::::::::'mmMMMMMMMMMMMMmm`:::::::::.RDWIZARDWIZARDWIZARD
+WIZARDWIZARDWIZAR.:::::::'mMMMMMMMMMMMMMMMMMMMMMMMMm`:::::::.IZARDWIZARDWIZARD
+WIZARDWIZARDWI.::::::'mMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMm`:::::.ARDWIZARDWIZARD
+WIZARDWIZARDW.::::'mMMMMMM"            "MMMMMMMMMMMMMMMMMMm`::::.DWIZARDWIZA D
+WIZARDWIZAR.::::'mMMMM"   mmMMMMMm          "MMMMMMMMMMMMMMMm`::::.IZARDWIZAr
+WIZARDWIZ.::::'mMMMM mmMMMMMMMMMMMMMMm          "MMMMMMMMMMMMMMMMMMMZARDWIZ42
+WIZARDWI.:::'mMMMMMMMMMMMMMMMMMMMMMMMMMm           "MMMMMMMMMMMM     ARDWIZa
+WIZARDW.:::'mMMMMMMMMMMMMMMMMMMMMMMMMMMMMm            MMMMMMMMMM      RDWIZ  I
+WIZARD::::'MMMMMMMMMMMMMMMMMMMMMMMMMMMMMm            mMMMMMMMMMMM     RDWI   D
+WIZAR.:::'mMMMMMMMMMMMMMMMMMMM    MMMM"              MMMMMMMMMMMMMMMMMMW"   iD
+WIZA.:::'MMMMMMMMMMMMMMMMM           MMMm             MMMMMMMMMM           .AD
+WIZA:::'mMMMMMMMMMMMMMM                 MMM         mMMMMMMMMMM            ARD
+WIZ.:::mMMMMMMMMMMMM             M        MM       mM  MMMMMMM            ZARD
+WIZ:::'MMMMMMMMMMM              mMMm       MM     mM     MMMM            M:ARD
+WI.:::MMMMMMMMMM               mMMMMMm      MM   mM        M           mM::.RD
+WI:::'MMMMMMMM                mMMMMMMM       MM mM  mM               mMM`:::RD
+WI:::mMMMMMMM                mMMMMMMMM        MMM  mMMMM          mMMMMMm:::.D
+W':::MMMMMMM                mMMMMMMMMMMM          mMMMMMMM    mMMMMMMMMMM:::`D
+W:::'MMMMMM        mMMMMMMMMMMMMMMMMMM MM        mMMMMMMMMMMMMMMMMMMMMMMM`:::D
+i:::iMMMMM      mMMMMM     MMMMMMMMMM   MMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMMi:::D
+z:::IMMMM"    mMMMMMMM      MMMMMMMM                             MMMMMMMMI:::)
+a:::iMMMM   mMMMMMMMMMM     MMMMMMMM                              MMMMMMMi:::D
+r:::`MMMM  MMMMMMMMMMMMMMMMMMMMMMMMMM                             MMMMMMM,:::D
+d`:::MMMm mMMMMMMMMMMMMMMMMMMMMMMM  MM               mMMMm       MMMMMMMM:::,D
+W`:::mMMM MMMMMMMMMMMMMMMMMMMMMMM    MMMMMMMMMMMMMMMMMMM        mMMMMMMMm:::.D
+WI:::`MMMmMMMMMMMMMMMMMMMMMMMMMM            mMMMMMMMMM         mMMMMMMMM,:::RD
+WI`:::MMMMMMMMMMMMMMMMMMMMMMMMM           mMMMMMMMMM           MMMMMMMMM:::'RD
+WIZ:::.MMMMMMMMMMMMMMMMMMMMMMM          mMMMMMMMMM            mMMMMMMMM':::ARD
+WIZ`MMMMM"""        ""MMMMMMM         mMMMMMMMMM              MMMMMMMMm:::'ARD
+WIZA"                     "M        mMMMMMMMMM               mMMMMMMMM'::'ZARD
+WI"                               mMMMMMMMMM                 MMMMMMMM,::.IZARD
+W  ZAMMMm                       mMMMMMMMMM                   MMMMMMM,:::'IZARD
+ IZARD`::Mm                   MMMMMMMMMM        mMMMMMMMMMMMMMMMMMM,:::'WIZARD
+WIZARDW`:::M               mMMMMMMMMMMM     mMMMMMMMMM      MMMMMMMm::'DWIZARD
+WIZARDWI`::MM           mMMMMMMMMMMMMM   mMMMMMMMMMMM             MM:'RDWIZARD
+WIZARDWIZAM MM       mMMMMMMMMMMMMMMM  mMMMMMMMMMMMMMmmmmmmmmmmmMMM:ZARDWIZARD
+WIZARDWIZA   Mm   mMMMMMMMMMMMMMMMMM" mMMMMMMMMMMMMMMMMMMMMMM'::::'IZARDWIZARD
+WIZARDWIZ     M mMM.MMMMMMMMMMMMMMMm mMMMMMMMMMMMMMMMMMMMMM.::::'DWIZARDWIZARD
+WIZARDWI    DWMm`::::"MMMMMMMMMMMMMm MMMMMMMMMMMMMMMMMMM".::::'ARDWIZARDWIZARD
+WIZARDW   ARDWIZAR`:::::."MMMMMMMMMMmMMMMMMMMMMMMMMM".:::::'WIZARDWIZARDWIZARD
+WIZARDW  ZARDWIZARDWI`:::::::.""MMMMMMMMMMMMMM"".::::::::'RDWIZARDWIZARDWIZARD
+WIZARDW  ZARDWIZARDWIZAR`::::::::::::::::::::::::::::'WIZARDWIZARDWIZARDWIZARD
+WIZARDWIZARDWIZARDWIZARDWIZAR``::::::::::::::::''IZARDWIZARDWIZARDWIZARDWIZARD
+WIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARD
+EOF
+    echo -e "${NC}"
+}
+
+show_header() {
     echo -e "${CYAN}${BOLD}====================================================================${NC}"
-    echo -e "${CYAN}${BOLD}         🧙‍♂️ VM SPACE WIZARD - SYSTEM & CONTAINER OPTIMIZER         ${NC}"
+    echo -e "${CYAN}${BOLD}         🧙‍♂️ VM SPACE WIZARD - SYSTEM & CONTAINER OPTIMIZER       ${NC}"
     echo -e "${CYAN}${BOLD}====================================================================${NC}"
+    echo -e "${YELLOW}GitHub  :${NC} ${BOLD}https://github.com/ali4210${NC}"
+    echo -e "${YELLOW}Active Repository Context:${NC} ${BOLD}${TARGET_REPO_DIR}${NC}\n"
 }
 
 pause() {
@@ -82,6 +140,7 @@ show_attachment_guidelines() {
 
 clean_containers() {
     while true; do
+        clear
         show_header
         echo -e "${YELLOW}${BOLD}[+] Granular Container Cleanup Engine (Docker & Podman)${NC}\n"
         echo -e "Select container components to clean:"
@@ -137,6 +196,7 @@ clean_containers() {
 }
 
 clean_system() {
+    clear
     show_header
     echo -e "${YELLOW}[+] Cleaning OS Package Manager Caches & System Logs...${NC}\n"
 
@@ -163,6 +223,7 @@ clean_system() {
 }
 
 setup_secondary_disk() {
+    clear
     show_header
     echo -e "${YELLOW}[+] Secondary Storage Partitioning & Data Offload Wizard${NC}"
     echo -e "This module mounts an attached secondary disk and offloads Docker & Podman storage.\n"
@@ -249,6 +310,7 @@ EOF
 }
 
 prepare_vdi_compact() {
+    clear
     show_header
     echo -e "${YELLOW}[+] Preparing System for Host Disk Compaction...${NC}\n"
     echo "This process fills all unused disk blocks with zeros so your host hypervisor"
@@ -277,6 +339,9 @@ prepare_vdi_compact() {
         pause
     fi
 }
+
+# --- Initial One-Time Banner Display ---
+show_banner
 
 # --- Main Menu Loop ---
 while true; do

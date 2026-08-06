@@ -16,8 +16,15 @@ if %errorLevel% neq 0 (
 cd /d "%~dp0"
 cls
 
+:: Print ASCII Banner safely from banner.txt in Cyan
+if exist "%~dp0banner.txt" (
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Content '%~dp0banner.txt' | Write-Host -ForegroundColor Cyan"
+) else if exist "%~dp0modules\banner.txt" (
+    powershell -NoProfile -ExecutionPolicy Bypass -Command "Get-Content '%~dp0modules\banner.txt' | Write-Host -ForegroundColor Cyan"
+)
+
 echo ====================================================================
-echo          [WIZARD] VM SPACE WIZARD - MASTER LAUNCHER (WINDOWS)
+echo          VM SPACE WIZARD - MASTER LAUNCHER (WINDOWS)
 echo ====================================================================
 echo.
 echo Which stage of the cleanup process are you currently executing?
@@ -50,11 +57,10 @@ if "%CHOICE%"=="2" (
     echo [i] Launching PowerShell Compaction Module...
     echo.
     
-    :: Check for vm-space-wizard.ps1 in the modules/ directory first (V2.1 Modular Path)
+    :: Check for vm-space-wizard.ps1 in the modules/ directory first
     if exist "%~dp0modules\vm-space-wizard.ps1" (
         powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0modules\vm-space-wizard.ps1"
     ) else if exist "%~dp0vm-space-wizard.ps1" (
-        :: Fallback check for root directory path
         powershell.exe -NoExit -ExecutionPolicy Bypass -File "%~dp0vm-space-wizard.ps1"
     ) else (
         echo.
