@@ -72,7 +72,7 @@ W  ZAMMMm                       mMMMMMMMMM                   MMMMMMM,:::'IZARD
 WIZARDW`:::M               mMMMMMMMMMMM     mMMMMMMMMM      MMMMMMMm::'DWIZARD
 WIZARDWI`::MM           mMMMMMMMMMMMMM   mMMMMMMMMMMM             MM:'RDWIZARD
 WIZARDWIZAM MM       mMMMMMMMMMMMMMMM  mMMMMMMMMMMMMMmmmmmmmmmmmMMM:ZARDWIZARD
-WIZARDWIZA   Mm   mMMMMMMMMMMMMMMMMM" mMMMMMMMMMMMMMMMMMMMMM'::::'IZARDWIZARD
+WIZARDWIZA   Mm   mMMMMMMMMMMMMMMMMM" mMMMMMMMMMMMMMMMMMMMMMM'::::'IZARDWIZARD
 WIZARDWIZ     M mMM.MMMMMMMMMMMMMMMm mMMMMMMMMMMMMMMMMMMMMM.::::'DWIZARDWIZARD
 WIZARDWI    DWMm`::::"MMMMMMMMMMMMMm MMMMMMMMMMMMMMMMMMM".::::'ARDWIZARDWIZARD
 WIZARDW   ARDWIZAR`:::::."MMMMMMMMMMmMMMMMMMMMMMMMMM".:::::'WIZARDWIZARDWIZARD
@@ -80,11 +80,19 @@ WIZARDW  ZARDWIZARDWI`:::::::.""MMMMMMMMMMMMMM"".::::::::'RDWIZARDWIZARDWIZARD
 WIZARDW  ZARDWIZARDWIZAR`::::::::::::::::::::::::::::'WIZARDWIZARDWIZARDWIZARD
 WIZARDWIZARDWIZARDWIZARDWIZAR``::::::::::::::::''IZARDWIZARDWIZARDWIZARDWIZARD
 WIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARD
+	   .aMMMb  dMP     dMMMMMP .aMMMb  dMMMMb  dMP dMP dMP dMP dMMMMMP 
+	  dMP"VMP dMP     dMP     dMP"dMP dMP dMP dMP dMP dMP amr   .dMP"  
+	 dMP     dMP     dMMMP   dMMMMMP dMP dMP dMP dMP dMP dMP  .dMP"    
+	dMP.aMP dMP     dMP     dMP dMP dMP dMP dMP.dMP.dMP dMP .dMP"      
+	VMMMP" dMMMMMP dMMMMMP dMP dMP dMP dMP  VMMMPVMMP" dMP dMMMMMP    
+                                                                   
 "@ -ForegroundColor Cyan
 
     Write-Host "====================================================================" -ForegroundColor Cyan
-    Write-Host "         VM SPACE WIZARD V2.1 - UNIVERSAL HYPERVISOR COMPACTOR       " -ForegroundColor Cyan
+    Write-Host "         VM SPACE WIZARD V2.1 - UNIVERSAL HYPERVISOR COMPACTOR        " -ForegroundColor Cyan
     Write-Host "====================================================================" -ForegroundColor Cyan
+    Write-Host "GitHub  : https://github.com/ali4210" -ForegroundColor Yellow
+    Write-Host "Active Repository Context: $TargetRepoDir" -ForegroundColor Yellow
 }
 
 function Pause-Console {

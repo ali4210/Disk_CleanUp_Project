@@ -17,7 +17,15 @@ CYAN='\033[0;36m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-TARGET_REPO_DIR="$(pwd)"
+# Dynamically locate the actual repository directory regardless of where the script is executed from
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SCRIPT_SOURCE" ]; do
+  SCRIPT_DIR="$( cd -P "$( dirname "$SCRIPT_SOURCE" )" >/dev/null 2>&1 && pwd )"
+  SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+  [[ $SCRIPT_SOURCE != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_SOURCE"
+done
+TARGET_REPO_DIR="$( cd -P "$( dirname "$SCRIPT_SOURCE" )/.." >/dev/null 2>&1 && pwd )"
+
 
 show_banner() {
     clear
@@ -70,6 +78,12 @@ WIZARDW  ZARDWIZARDWI`:::::::.""MMMMMMMMMMMMMM"".::::::::'RDWIZARDWIZARDWIZARD
 WIZARDW  ZARDWIZARDWIZAR`::::::::::::::::::::::::::::'WIZARDWIZARDWIZARDWIZARD
 WIZARDWIZARDWIZARDWIZARDWIZAR``::::::::::::::::''IZARDWIZARDWIZARDWIZARDWIZARD
 WIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARDWIZARD
+	   .aMMMb  dMP     dMMMMMP .aMMMb  dMMMMb  dMP dMP dMP dMP dMMMMMP 
+	  dMP"VMP dMP     dMP     dMP"dMP dMP dMP dMP dMP dMP amr   .dMP"  
+	 dMP     dMP     dMMMP   dMMMMMP dMP dMP dMP dMP dMP dMP  .dMP"    
+	dMP.aMP dMP     dMP     dMP dMP dMP dMP dMP.dMP.dMP dMP .dMP"      
+	VMMMP" dMMMMMP dMMMMMP dMP dMP dMP dMP  VMMMPVMMP" dMP dMMMMMP     
+                                                                   
 EOF
     echo -e "${NC}"
 }
