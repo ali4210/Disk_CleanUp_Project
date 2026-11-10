@@ -47,21 +47,43 @@ Shrinking a VM's disk footprint is deceptively hard:
 |---|---|
 | 🌍 **Universal distro support** | Debian, Ubuntu, Kali Linux, CentOS, RHEL, Fedora, and Rocky Linux — auto-detects `apt`, `dnf`, or `yum` |
 | 🐳 **Granular container pruning** | Selectively prune Docker & Podman: build caches only, unused volumes only, stopped containers only, dangling images only, or a full deep clean |
-| 💾 **Secondary disk offloader** | Safely detects, formats (if needed), and mounts a secondary virtual drive to `/var/lib/docker`, then repoints Podman's `graphroot` — with built-in **root-drive protection** so you can never target your active OS disk |
+| 💾 **Full Docker/Podman/containerd storage migration** | `linux/docker-storage-migrate.sh`: detects your storage driver first (see the driver matrix below) and picks a matching copy method and target filesystem, stops Docker, containerd and Podman cleanly, copies existing images/containers/volumes/networks to the new disk, mounts it at `/var/lib/docker`, bind-mounts `/var/lib/containerd` from it, points Podman's rootless **and** rootful `storage.conf` (graphroot + runroot) at it, verifies before/after image/container/volume counts, and rolls back automatically on any failure — original data on the root disk is never deleted automatically |
+| 🔍 **"Detected setup" summary before anything happens** | Storage driver, containerd snapshotter mode, filesystem types, a custom `daemon.json` data-root, snap-installed/rootless Docker, and the init system are all detected and printed before the migration plan — and nothing is formatted or copied until that plan is confirmed |
+| 🔁 **Persistent across reboots, safely** | fstab entries use `nofail` (a detached disk never hangs boot) and are backed up + validated with `findmnt --verify` before being kept; a systemd drop-in adds `RequiresMountsFor=` so `docker.service` always waits for the disk to actually be mounted |
+| 🧯 **Rollback & crash recovery** | Any failed step reverts mounts/fstab/the systemd drop-in automatically; if the wizard itself is killed mid-migration, a state file is detected and reported on the next launch so you know nothing silently broke |
+| 🗑️ **Cleanup renames before it deletes** | The audit/cleanup menu renames leftover root-disk copies to `*.bak` first; permanently deleting that backup always needs a separate, real confirmation — even with `--yes` |
+| 🧪 **`--dry-run` and `--yes`** | Preview every state-changing step with `--dry-run`, or automate the whole flow non-interactively with `--yes` (the final backup deletion still always asks for real) |
 | 📖 **In-menu attachment guides** | Step-by-step instructions for attaching a second virtual disk in both **Oracle VirtualBox** and **VMware Workstation/Player**, shown right when you need them |
-| 🧽 **OS-level cleanup** | Clears package manager caches, runs `autoremove`, vacuums `systemd` journal logs (keeps last 3 days), and clears `/tmp` and thumbnail caches |
-| 🔄 **Zero-fill sequence** | Writes zeroes across unallocated disk blocks so the host hypervisor can actually reclaim the freed space, then gracefully shuts the VM down |
+| 🧽 **OS-level cleanup** | Clears package manager caches (`apt`/`dnf`/`yum`/`pacman`/`zypper`), vacuums `systemd` journal logs (keeps last 3 days, skipped with a warning on non-systemd), and clears temp/thumbnail caches older than a day (never a blind `rm -rf /tmp/*`) |
+| 🔄 **Zero-fill sequence** | Writes zeroes to a real on-disk directory (checked against `/tmp` being tmpfs first — writing to RAM-backed `/tmp` would never free anything), then gracefully shuts the VM down |
 | 🌐 **Global CLI install** | Registers itself as `clean-wizard`, runnable from any terminal, any directory |
+
+#### Storage driver matrix
+
+Docker's storage driver decides how layers are actually laid out on disk, and that decides how they can be safely copied — the wizard detects yours and picks accordingly, rather than assuming everyone is on overlay2/ext4:
+
+| Driver | Target filesystem | Copy method | Why |
+|---|---|---|---|
+| `overlay2` (classic graphdriver) | ext4, or xfs with `ftype=1` | plain file copy (`rsync -aHAXS`) | layers are ordinary files/directories; any filesystem that supports them works |
+| `overlayfs` + containerd snapshotter (`driver-type: io.containerd.snapshotter.v1`) | ext4, or xfs with `ftype=1` | plain file copy (`rsync -aHAXS`) | same reasoning as overlay2 — still ordinary files, just managed by containerd's snapshotter plugin instead of dockerd's graphdriver code |
+| `vfs`, `aufs`, `fuse-overlayfs` | ext4, or xfs with `ftype=1` | plain file copy (`rsync -aHAXS`) | same reasoning — no subvolumes/snapshots involved |
+| `btrfs` | **must be btrfs** (requires `btrfs-progs`, checked and clearly reported if missing) | **portable mode**: `docker save`/`load` for images, `rsync` for volumes (volumes are plain directories regardless of driver), containers recreated from their captured `docker inspect` config | the btrfs driver stores every layer as a btrfs subvolume; a plain copy would flatten them into ordinary directories, losing the "is a subvolume" property the driver depends on. See the design note in `docker-storage-migrate.sh` above `migrate_docker_storage_btrfs()` for the full reasoning, including the cost: anything a container wrote outside a volume is **not** preserved in portable mode — only volumes and the container's configuration (image, env, ports, restart policy, mounts, labels, network membership) survive |
+| `zfs` | **refused, before touching anything** | none — not supported | same structural problem as btrfs (layers are zpool datasets/snapshots), but with no send/receive support implemented here; migrate it yourself with `zfs send`/`receive`, or switch to overlay2 first |
+
+**Known limitations:** Docker installed via snap, or run in rootless mode, uses a different data path than the default `/var/lib/docker` this wizard targets — detected and reported, but not automatically redirected to. Container recreation in btrfs/portable mode covers name, image (every tag it had, not just one — multi-tag and dangling-but-in-use images are restored by name, not left as `<none>:<none>`), env, restart policy, published ports, volume/bind mounts, labels, working dir, network membership, user, privileged mode, added/dropped capabilities, devices, memory/CPU limits, and `CMD-SHELL`-form health checks. It does **not** reconstruct a multi-part entrypoint beyond its first element, an exec-form health check, or exotic settings like DNS/extra-hosts/sysctls/ulimits/pids-limit — anything it can't reconstruct is printed as a named warning for that specific container, never silently dropped. Dependency checks (rsync, findmnt, blkid, and — for btrfs — jq or python3) all run up front, before anything is formatted, not discovered partway through; if `jq` isn't installed (it has no package candidate on some distros, e.g. ParrotOS), the btrfs path's JSON parsing transparently falls back to a bundled python3 helper instead of refusing. The free-space check before a btrfs migration accounts for both the volumes being copied and the images `docker save` is about to write onto the same target disk. Podman support and the btrfs/portable pipeline were written, reviewed, and exercised against loop-file disks with a stub Docker daemon (see Testing below) but could not be run-tested against a real Podman installation or a real btrfs-backed Docker daemon in this project's own development environment — the overlay2/rsync path *was* run-tested against this project's real (non-btrfs) Docker daemon's actual driver output.
 
 ### 🪟 Stage 2 — Windows Host Engine (`modules/vm-space-wizard.ps1`)
 
 | Feature | Details |
 |---|---|
-| 🖥️ **Multi-hypervisor support** | Full native support for **Oracle VirtualBox** (`.vdi`) via `VBoxManage.exe` and **VMware Workstation/Player** (`.vmdk`) |
+| 🖥️ **Multi-hypervisor support** | **Oracle VirtualBox** (`.vdi`) via `VBoxManage.exe`, and **VMware Workstation/Player** (`.vmdk`) via `vmware-vdiskmanager.exe` — both skip/warn on disks belonging to a currently running VM instead of risking corruption |
+| 🐳 **Docker Desktop / Podman (WSL2) relocation** | Moves Docker Desktop's and/or Windows-host Podman's WSL2 virtual disks to another drive via the documented `wsl --export`/`--unregister`/`--import` workflow — they're re-registered under the same distro name, so Docker Desktop/Podman need no reconfiguration afterward |
 | 🔍 **Orphaned snapshot auditor** | Cross-references every physical `.vdi` file on disk against VirtualBox's media registry, flags anything unregistered, and offers a guided, confirmed deletion to reclaim space safely |
 | 📦 **Registered disk compactor** | Lists every disk VirtualBox actually knows about and compacts one, several, or all of them via `VBoxManage modifymedium --compact` |
 | 🔐 **Automated elevation** | `autorun.bat` self-elevates to Administrator — required for hypervisor CLI access — with zero manual UAC hunting |
-| 🧩 **Modular architecture** | Hypervisor logic is cleanly separated into `virtualbox-engine.ps1` and `vmware-engine.ps1`, loaded dynamically by the master entry point |
+| 🧩 **Modular architecture** | Hypervisor/WSL logic is cleanly separated into `virtualbox-engine.ps1`, `vmware-engine.ps1` and `docker-desktop-engine.ps1`, loaded dynamically by the master entry point |
+
+**Known limitation:** the Windows-side modules were written against the documented `VBoxManage`/`vmware-vdiskmanager`/`wsl.exe` CLIs and syntax/lint-checked (PSScriptAnalyzer, PowerShell 5.1- and 7-compatible syntax only), but this project was built and tested on Linux with no Windows/VirtualBox/VMware/WSL available — **run-test these on your actual Windows host before relying on them**, especially `Shrink-VMwareDisks` and the WSL2 relocation functions.
 
 ---
 
@@ -73,7 +95,7 @@ Shrinking a VM's disk footprint is deceptively hard:
 |---|---|---|
 | **Shell** | Bash | Windows PowerShell (bundled) |
 | **Privileges** | `sudo` | Administrator (auto-elevated) |
-| **Software** | `lsblk`, `blkid`, `dd` (standard on all supported distros); Docker and/or Podman for container pruning | Oracle VirtualBox and/or VMware Workstation/Player installed at their default paths |
+| **Software** | `lsblk`, `blkid`, `dd`, `rsync`, `findmnt` (util-linux) for migration; `systemctl` for the systemd drop-in (warns and skips it otherwise); Docker and/or Podman | Oracle VirtualBox and/or VMware Workstation/Player installed at their default paths; `wsl.exe` for Docker Desktop/Podman relocation |
 
 ### Clone the repository
 
@@ -153,7 +175,7 @@ flowchart TD
 
 1. Confirm Stage 1 has finished and the VM is shut down.
 2. Double-click **`autorun.bat`** and accept the Administrator prompt.
-3. Select **`[2] Stage 2: Windows Host VDI / VMDK Compaction`**.
+3. Select **`[2] Stage 2: Windows Host VDI/VMDK Compaction + Docker Desktop/Podman Relocation`**.
 4. Choose your hypervisor:
    - **VirtualBox** → audit orphaned snapshots, then compact one/several/all registered `.vdi` disks
    - **VMware** → shrink `.vmdk` disks
@@ -176,7 +198,8 @@ Please select an action:
   [2] Free Up OS System Space (Clean Package Caches & Logs)
   [3] Offload Docker & Podman Storage to Secondary HDD Drive
   [4] FULL CLEANUP + Zero-Fill for Host Disk Compaction (Stage 1)
-  [5] Exit
+  [5] Audit & Clean Up Leftover Storage After a Migration
+  [0] Exit
 ```
 
 </details>
@@ -192,7 +215,7 @@ Please select an action:
   [3] Prune Stopped Containers Only (Deletes non-running containers)
   [4] Prune Dangling Images Only (Untagged image layers)
   [5] FULL DEEP CLEAN (Prune ALL unused containers, images, volumes & caches)
-  [6] Return to Main Menu
+  [0] Return to Main Menu
 ```
 
 </details>
@@ -207,14 +230,14 @@ Please select an action:
 Which stage of the cleanup process are you currently executing?
 
   [1] Stage 1: Linux System Cleanup
-  [2] Stage 2: Windows Host VDI / VMDK Compaction (RUN HERE)
-  [3] Exit
+  [2] Stage 2: Windows Host VDI/VMDK Compaction + Docker Desktop/Podman Relocation
+  [0] Exit
 ```
 
 </details>
 
 <details>
-<summary><b>🪟 Windows Stage 2 — Hypervisor Selection</b></summary>
+<summary><b>🪟 Windows Stage 2 — Platform Selection</b></summary>
 
 ```text
 ====================================================================
@@ -224,7 +247,8 @@ Select your virtualization platform:
 
   [1] Oracle VirtualBox (.vdi)
   [2] VMware Workstation / Player (.vmdk)
-  [3] Exit
+  [3] Docker Desktop / Podman on Windows (WSL2 data relocation)
+  [0] Exit
 ```
 
 ```text
@@ -233,7 +257,15 @@ Select your virtualization platform:
   [1] Compact Registered VDI Disks and Active Snapshot Chains
   [2] Audit and Clean Orphaned / Corrupted Snapshot Files
   [3] Run Full Maintenance (Audit + Compact All)
-  [4] Back to Platform Selection
+  [0] Back to Platform Selection
+```
+
+```text
+--- DOCKER DESKTOP / PODMAN (WSL2) ENGINE ---
+
+  [1] Relocate Docker Desktop's WSL2 data to another drive
+  [2] Relocate Windows-host Podman's WSL2 machine data to another drive
+  [0] Back to Platform Selection
 ```
 
 </details>
@@ -246,11 +278,14 @@ VM Space Wizard touches destructive operations (disk formatting, snapshot deleti
 
 | Guardrail | What it prevents |
 |---|---|
-| 🚫 **Root drive protection** | The secondary disk offloader compares the target device against your active root filesystem's parent disk and **hard-blocks** the operation if they match |
-| 🔍 **Filesystem detection before format** | `setup_secondary_disk` checks for an existing filesystem via `lsblk` first — a pre-formatted drive with data is **never** silently reformatted |
-| ✅ **Confirmation prompts** | Every destructive action (formatting a disk, zero-filling, deleting an orphaned snapshot) requires an explicit `y/N` confirmation |
+| 🚫 **Root/boot/swap/partitioned-disk protection** | The migration refuses a target that contains your root OS, `/boot`, `/boot/efi`, swap, or that is a whole disk with existing partitions — pick the partition/disk itself |
+| 🔍 **Filesystem detection before format** | Checks for an existing filesystem via `lsblk` first — a pre-formatted drive with data is **never** silently reformatted |
+| 📏 **Free-space precheck** | Refuses to start copying if the target disk doesn't have (existing data × 1.1) free, instead of failing partway through |
+| ↩️ **Automatic rollback** | Any failure during stop/copy/mount/fstab/start/verify reverts every change (mounts, fstab, the systemd drop-in) back to the pre-migration state; the root disk's original data is never touched by the migration step itself |
+| 🧾 **Rename-before-delete cleanup** | The leftover-cleanup menu renames old root-disk copies to `*.bak` first; actually deleting that backup is a separate step that always needs a real confirmation, even under `--yes` |
+| ✅ **Confirmation prompts** | Every destructive action (formatting a disk, migrating, zero-filling, deleting an orphaned snapshot, a full container prune) requires an explicit confirmation — satisfiable non-interactively via `--yes`, except the final backup deletion |
 | 🔎 **Registry cross-check before deletion** | Orphaned snapshot detection only flags `.vdi` files that are physically present **and** absent from VirtualBox's own media registry — never a randomly-selected file |
-| 🧩 **Safe container pruning tiers** | Build-cache-only pruning is offered as a non-destructive first option, separate from the full system prune |
+| 🧩 **Safe container pruning tiers** | Build-cache-only pruning is offered as a non-destructive first option, separate from the full system prune, which now also requires a typed `YES` confirmation |
 | 🔐 **Scoped elevation** | Windows scripts only request Administrator rights for Stage 2 (hypervisor CLI access) — Stage 1 never needs elevated Windows privileges |
 
 ---
@@ -265,12 +300,17 @@ Disk_CleanUp_Project/
     ├── 📦 install.sh                    # Registers 'clean-wizard' as a global command
     ├── 📖 README.md
     ├── 🐧 linux/
-    │   └── vm-space-wizard.sh           # Stage 1: Linux system & container engine
-    └── 🪟 modules/
-        ├── vm-space-wizard.ps1          # Stage 2: Windows master entry point
-        ├── virtualbox-engine.ps1        # VirtualBox VDI compaction & snapshot audit
-        ├── vmware-engine.ps1            # VMware VMDK shrink engine
-        └── banner.txt                   # ASCII banner used by autorun.bat
+    │   ├── vm-space-wizard.sh           # Stage 1: Linux system & container engine (menus)
+    │   └── docker-storage-migrate.sh    # Full Docker/containerd/Podman migration pipeline
+    ├── 🪟 modules/
+    │   ├── vm-space-wizard.ps1          # Stage 2: Windows master entry point
+    │   ├── virtualbox-engine.ps1        # VirtualBox VDI compaction & snapshot audit
+    │   ├── vmware-engine.ps1            # VMware VMDK shrink engine
+    │   ├── docker-desktop-engine.ps1    # Docker Desktop / Podman WSL2 relocation
+    │   └── banner.txt                   # ASCII banner used by autorun.bat
+    └── 🧪 tests/
+        ├── run-tests.sh                 # Isolated test suite (loop disks, fake docker/systemctl)
+        └── fakebin/                      # Stub docker/systemctl used only by the test suite
 ```
 
 **Tech stack:** Bash · Windows PowerShell · Batch
@@ -282,14 +322,17 @@ Disk_CleanUp_Project/
 | Action | What actually executes |
 |---|---|
 | Container build-cache prune | `docker builder prune -f` / `podman builder prune -f` |
-| Full container deep clean | `docker system prune -a --volumes -f` / `podman system prune -a --volumes -f` |
-| OS cache cleanup | `apt-get clean && apt-get autoremove -y` (or the `dnf`/`yum` equivalent) |
-| Log cleanup | `journalctl --vacuum-time=3d` |
-| Secondary disk mount | `mkfs.ext4` (if needed) → `mount` → UUID entry appended to `/etc/fstab` |
-| Podman storage repoint | Writes `graphroot` into `~/.config/containers/storage.conf` |
-| Zero-fill | `dd if=/dev/zero of=/tmp/zero.fill bs=1M` until the disk fills, then removes the fill file |
+| Full container deep clean | `docker system prune -a --volumes -f` / `podman system prune -a --volumes -f` (now behind a typed `YES` confirmation) |
+| OS cache cleanup | `apt-get clean && apt-get autoremove -y` (or the `dnf`/`yum`/`pacman`/`zypper` equivalent) |
+| Log cleanup | `journalctl --vacuum-time=3d` (skipped with a warning if systemd isn't present) |
+| Storage migration | stop `docker.socket`/`docker.service`/`containerd.service`/podman → `rsync -aHAXS --numeric-ids` existing data → mount the disk at `/var/lib/docker` → bind-mount `/var/lib/containerd` → update `/etc/fstab` (`nofail`, backed up, `findmnt --verify`'d) → systemd drop-in (`RequiresMountsFor=`) → restart → verify → roll back on any failure |
+| Podman storage repoint | Writes `graphroot` + `runroot` into `~/.config/containers/storage.conf` (rootless) and/or `/etc/containers/storage.conf` (rootful); enables `podman.socket` |
+| Leftover cleanup | Renames old root-disk copies to `*.bak`; permanently deleting them is a separate, always-interactive confirmation |
+| Zero-fill | Verifies the fill directory isn't tmpfs (RAM-backed `/tmp` would do nothing), then `dd if=/dev/zero of=<realdir>/.vmwizard-zero.fill bs=1M` until the disk fills, then removes the fill file |
 | VDI orphan audit | Diffs `VBoxManage list hdds` against every `.vdi` under `%USERPROFILE%\VirtualBox VMs` |
 | VDI compaction | `VBoxManage modifymedium disk <path> --compact` |
+| VMDK shrink | `vmware-vdiskmanager.exe -k <path>`, skipping any disk whose VM `vmrun -T ws list` reports as running |
+| Docker Desktop / Podman WSL2 relocation | `wsl --shutdown` → `wsl --export <distro> <tar>` → `wsl --unregister <distro>` → `wsl --import <distro> <newdir> <tar> --version 2` |
 | Global CLI install | `ln -sf linux/vm-space-wizard.sh /usr/local/bin/clean-wizard` |
 
 ---
@@ -343,10 +386,39 @@ All Podman operations are wrapped in `command -v podman &>/dev/null` checks and 
 
 ---
 
+## 🧪 Testing
+
+`tests/run-tests.sh` exercises the full migration pipeline for real — fresh migration, migration with pre-existing images/volumes, idempotent re-run, `--dry-run`, rollback-on-verification-failure, interrupted-run detection, wrong-device/too-small/partitioned-disk refusals, rename-before-delete cleanup, driver detection and filesystem matching (including a real loop-file **btrfs** disk, real `mkfs.xfs ftype=0/1`, and a refusal when `btrfs-progs` is missing), the full btrfs/portable migration (image save/load, volume rsync, container recreation with env/ports/restart-policy/mounts/network membership verified field-by-field), and that the plain-rsync path refuses a btrfs-driver setup — all without ever touching a real block device, the real Docker daemon, real systemd units, or `/etc/fstab`.
+
+It also covers nine defects found running this tool for real on a ParrotOS VM (btrfs, Docker 20.10, migration to a second disk, then a reboot) — each with a test that fails on the pre-fix code and passes on the fix:
+
+| # | Defect | Fix |
+|---|---|---|
+| 1 | `docker save` was given bare image IDs, so `docker load` returned every image as `<none>:<none>` | Images are saved by name (every tag, not just one); a dangling-but-in-use image is re-tagged from its last-known name after load |
+| 2 | `mig_state_set`'s plain `>` redirect failed silently with "Permission denied" against the root-owned state dir, so crash recovery never recorded anything | Goes through `$SUDO tee`, like the directory create that made it root-owned in the first place |
+| 3 | A container's `Cmd`/`Entrypoint` were dropped on recreate — `sleep 86400` became a restart loop | Entrypoint/Cmd/User/Privileged/CapAdd/CapDrop/Devices/Memory/CPUs/health check are now carried over; anything still not reconstructed (a multi-part entrypoint, an exec-form health check, DNS/extra-hosts/sysctls/ulimits/pids-limit) is a named warning, never a silent drop |
+| 4 | The temporary root-disk view (`/mnt/.vmwiz-rootview.*`) stayed mounted after a successful migration | Unmounted (lazily if busy) on every exit path, success or failure, including this run's own exit trap |
+| 5 | The target disk was formatted before the tool discovered `jq` was missing (no package candidate on some distros, e.g. ParrotOS) | All prerequisite checks run before any format prompt; if `jq` is missing, the btrfs path's JSON parsing falls back to a bundled python3 helper instead of refusing |
+| 6 | The free-space check only counted the volumes directory, not the images `docker save` was about to write onto the same disk | Counts volumes + total image size (deduplicated by image id) with the same safety margin |
+| 7 | The final message claimed Podman storage was "now live" even when Podman was skipped (already had its own data, or wasn't installed) | Lists exactly what moved and what was skipped, and why, per component |
+| 8 | Reclaim-leftovers hints said "menu option [5]", which goes stale the moment menus are renumbered | Named by the menu entry's actual text instead |
+| 9 | A reboot renamed the target disk from `/dev/sdb` to `/dev/sda`; the state file and "already migrated" detection only knew the old name | State file records the disk's UUID alongside its `/dev` name; `mig_verify` and "already migrated" detection compare by UUID, not name |
+
+```bash
+sudo bash tests/run-tests.sh
+```
+
+It uses loop devices backed by sparse files under `/tmp`, stub `docker`/`systemctl` binaries, and a throwaway fstab/root-disk fixture, and cleans all of that up (including the loop devices) when it exits. It re-execs itself under `sudo` if not already root. Podman's rootful/rootless paths are reviewed but not covered by this suite (no Podman in this project's own dev environment) — the Windows-side modules aren't covered by it at all and need manual testing on a real Windows host. The btrfs tests validate this script's own logic (detection, refusals, sequencing, volume rsync, fstab/dropin, verification) against a real btrfs filesystem with a stub daemon; they do not exercise a real Docker daemon actually configured with the btrfs driver, real `docker save`/`load` tar fidelity (a well-established Docker primitive, not something this project re-validates), or recreating a container with exotic real-world configuration.
+
+---
+
 ## 🧭 Roadmap
 
 - [ ] Add native macOS host support (VMware Fusion)
-- [ ] Dry-run / preview mode for destructive operations
+- [ ] Auto-redirect to the snap/rootless Docker data path instead of just detecting and reporting it
+- [ ] zfs support via `zfs send`/`receive` (currently refused with an explanation)
+- [ ] Offer xfs vs ext4 as an explicit format choice for a blank secondary disk when the driver doesn't require btrfs
+- [ ] Reconstruct exotic container config still not covered in btrfs/portable mode (DNS/extra-hosts/sysctls/ulimits/pids-limit, multi-part entrypoints, exec-form health checks)
 - [ ] Progress bars for zero-fill and compaction stages
 - [ ] Add a `LICENSE` file and tagged GitHub Releases
 - [ ] Scheduled/automated maintenance mode

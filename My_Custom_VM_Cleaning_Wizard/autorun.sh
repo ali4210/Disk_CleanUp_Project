@@ -5,7 +5,7 @@
 # DESCRIPTION:  Master cross-platform entry point for VM maintenance suite.
 # ==============================================================================
 
-set -e
+set -euo pipefail
 
 # --- Terminal Color Formats ---
 GREEN='\033[0;32m'
@@ -15,7 +15,17 @@ RED='\033[0;31m'
 BOLD='\033[1m'
 NC='\033[0m'
 
-SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# Resolve the script's real directory, following symlinks (install.sh can
+# symlink scripts into /usr/local/bin, and this mirrors how linux/vm-space-
+# wizard.sh resolves its own location, for consistency).
+SCRIPT_SOURCE="${BASH_SOURCE[0]}"
+while [ -h "$SCRIPT_SOURCE" ]; do
+    SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" >/dev/null 2>&1 && pwd)"
+    SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
+    [[ $SCRIPT_SOURCE != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_SOURCE"
+done
+SCRIPT_DIR="$(cd -P "$(dirname "$SCRIPT_SOURCE")" >/dev/null 2>&1 && pwd)"
+TARGET_REPO_DIR="$SCRIPT_DIR"
 TARGET_SCRIPT="${SCRIPT_DIR}/linux/vm-space-wizard.sh"
 INSTALLER_SCRIPT="${SCRIPT_DIR}/install.sh"
 
@@ -120,12 +130,12 @@ show_launch_local() {
         chmod +x "$TARGET_SCRIPT"
         echo -e "${GREEN}--> Launching Stage 1 Linux Engine...${NC}\n"
         sleep 1
-        exec "$TARGET_SCRIPT"
+        exec "$TARGET_SCRIPT" "$@"
     elif [[ -f "${SCRIPT_DIR}/vm-space-wizard.sh" ]]; then
         chmod +x "${SCRIPT_DIR}/vm-space-wizard.sh"
         echo -e "${GREEN}--> Launching Stage 1 Linux Engine (Legacy Path)...${NC}\n"
         sleep 1
-        exec "${SCRIPT_DIR}/vm-space-wizard.sh"
+        exec "${SCRIPT_DIR}/vm-space-wizard.sh" "$@"
     else
         show_header
         echo -e "${YELLOW}[!] Error: Could not locate 'vm-space-wizard.sh'!${NC}"
@@ -143,7 +153,7 @@ install_global_cli() {
         show_header
         echo -e "${YELLOW}[!] Error: Could not locate 'install.sh' at ${INSTALLER_SCRIPT}${NC}"
     fi
-    read -p "Press [ENTER] to return to the menu..."
+    read -r -p "Press [ENTER] to return to the menu..."
 }
 
 show_windows_guide() {
@@ -162,7 +172,7 @@ show_windows_guide() {
     echo -e "  3. Select **Stage 2** to run the VDI/VMDK compaction wizard.\n"
     echo -e "${CYAN}====================================================================${NC}"
     echo -e "${GREEN}[✔] Stage 1 (Cleanup) must happen here first!${NC}"
-    read -p "Press [ENTER] to return to the menu..."
+    read -r -p "Press [ENTER] to return to the menu..."
 }
 
 # --- Show ASCII Banner once when autorun.sh starts ---
@@ -175,15 +185,15 @@ while true; do
     echo -e "  ${GREEN}[1]${NC} Running inside LINUX GUEST (Perform Stage 1 Cleanup/Zero-Fill)"
     echo -e "  ${GREEN}[2]${NC} Install 'clean-wizard' as Global System Command (/usr/local/bin)"
     echo -e "  ${GREEN}[3]${NC} Intend to run on WINDOWS HOST (Guidelines for Stage 2 Compaction)"
-    echo -e "  ${GREEN}[4]${NC} Exit"
+    echo -e "  ${GREEN}[0]${NC} Exit"
     echo -e "\n===================================================================="
-    read -p "Enter choice [1-4]: " CHOICE
+    read -r -p "Enter choice [0-3]: " CHOICE
 
     case $CHOICE in
-        1) show_launch_local ;;
+        1) show_launch_local "$@" ;;
         2) install_global_cli ;;
         3) show_windows_guide ;;
-        4) echo -e "\n${GREEN}Goodbye!${NC}"; exit 0 ;;
+        0) echo -e "\n${GREEN}Goodbye!${NC}"; exit 0 ;;
         *) echo -e "\n${RED}Invalid option!${NC}"; sleep 1 ;;
     esac
 done

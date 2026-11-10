@@ -7,7 +7,21 @@
 # HYPERVISORS:   Oracle VirtualBox & VMware Workstation / Player / Fusion
 # ==============================================================================
 
-set -e
+set -euo pipefail
+
+# A normal (non-login, or just minimally-configured) user's PATH often lacks
+# the sbin directories — seen on ParrotOS — even though package-manager tools
+# this script depends on (apt-get/dnf/pacman/zypper's helpers, etc. and
+# anything the sourced migration module needs) are installed there. Fix PATH
+# once, here, before anything else runs, same as docker-storage-migrate.sh.
+for _vmw_sbin_dir in /usr/sbin /sbin /usr/local/sbin; do
+    case ":$PATH:" in
+        *":$_vmw_sbin_dir:"*) ;;
+        *) PATH="$PATH:$_vmw_sbin_dir" ;;
+    esac
+done
+unset _vmw_sbin_dir
+export PATH
 
 # --- Terminal Color Formats ---
 RED='\033[0;31m'
@@ -24,7 +38,35 @@ while [ -h "$SCRIPT_SOURCE" ]; do
   SCRIPT_SOURCE="$(readlink "$SCRIPT_SOURCE")"
   [[ $SCRIPT_SOURCE != /* ]] && SCRIPT_SOURCE="$SCRIPT_DIR/$SCRIPT_SOURCE"
 done
-TARGET_REPO_DIR="$( cd -P "$( dirname "$SCRIPT_SOURCE" )/.." >/dev/null 2>&1 && pwd )"
+SCRIPT_DIR="$( cd -P "$( dirname "$SCRIPT_SOURCE" )" >/dev/null 2>&1 && pwd )"
+TARGET_REPO_DIR="$( cd -P "$SCRIPT_DIR/.." >/dev/null 2>&1 && pwd )"
+
+# --- Whole-session transcript logging (separate from the migration module's own log) ---
+_VMW_SESSION_LOG_DIR="${VMW_LOG_DIR:-/var/log/vm-space-wizard}"
+if ! mkdir -p "$_VMW_SESSION_LOG_DIR" 2>/dev/null; then
+    # HOME is normally always set, but not guaranteed (minimal sudo/cron
+    # contexts), so fall back to /tmp rather than fail under `set -u`.
+    _VMW_SESSION_LOG_DIR="${HOME:-/tmp}/.cache/vm-space-wizard/log"
+    mkdir -p "$_VMW_SESSION_LOG_DIR" 2>/dev/null || _VMW_SESSION_LOG_DIR=""
+fi
+if [[ -n "$_VMW_SESSION_LOG_DIR" ]]; then
+    _VMW_SESSION_LOG_FILE="$_VMW_SESSION_LOG_DIR/session-$(date +%Y%m%d-%H%M%S)-$$.log"
+    exec > >(tee -a "$_VMW_SESSION_LOG_FILE") 2>&1
+    echo -e "${CYAN}[i] Full session transcript: $_VMW_SESSION_LOG_FILE${NC}"
+fi
+
+# --- Docker/Podman storage migration engine (provides setup_secondary_disk and
+# docker_storage_audit — the full rsync+verify+rollback pipeline). Flags such as
+# --dry-run and --yes are forwarded to it. ---
+MIGRATE_MODULE="$SCRIPT_DIR/docker-storage-migrate.sh"
+if [[ -f "$MIGRATE_MODULE" ]]; then
+    # shellcheck source=./docker-storage-migrate.sh
+    source "$MIGRATE_MODULE" "$@"
+else
+    echo -e "${RED}[!] Error: Could not locate docker-storage-migrate.sh in ${SCRIPT_DIR}. Storage offload/audit will be unavailable.${NC}"
+    setup_secondary_disk() { echo -e "${RED}[!] docker-storage-migrate.sh is missing; cannot offload storage.${NC}"; }
+    docker_storage_audit() { echo -e "${RED}[!] docker-storage-migrate.sh is missing; cannot audit storage.${NC}"; }
+fi
 
 
 show_banner() {
@@ -98,7 +140,7 @@ show_header() {
 
 pause() {
     echo ""
-    read -p "Press [ENTER] to return to the menu..."
+    read -r -p "Press [ENTER] to return to the menu..."
 }
 
 show_virtualbox_instructions() {
@@ -142,14 +184,25 @@ show_attachment_guidelines() {
     echo -e "\n${YELLOW}Would you like guidelines on how to attach a secondary disk?${NC}"
     echo -e "  ${GREEN}[1]${NC} Show Oracle VirtualBox Instructions"
     echo -e "  ${GREEN}[2]${NC} Show VMware Workstation / Player Instructions"
-    echo -e "  ${GREEN}[3]${NC} Skip Guidelines"
-    read -p "Select choice [1-3]: " GUIDE_CHOICE
+    echo -e "  ${GREEN}[0]${NC} Skip Guidelines"
+    read -r -p "Select choice [0-2]: " GUIDE_CHOICE
 
     case $GUIDE_CHOICE in
         1) show_virtualbox_instructions ;;
         2) show_vmware_instructions ;;
         *) echo "Skipping guidelines..." ;;
     esac
+}
+
+# Runs one prune command; never lets a single failing engine abort the whole
+# wizard (set -e would otherwise kill the menu loop on any non-zero exit).
+_vmw_run_prune() {
+    local label="$1"; shift
+    if "$@"; then
+        echo -e "${GREEN}[✔] $label${NC}"
+    else
+        echo -e "${YELLOW}[!] $label reported an error (exit $?) — continuing.${NC}"
+    fi
 }
 
 clean_containers() {
@@ -163,42 +216,49 @@ clean_containers() {
         echo -e "  ${GREEN}[3]${NC} Prune Stopped Containers Only ${CYAN}(Deletes non-running containers)${NC}"
         echo -e "  ${GREEN}[4]${NC} Prune Dangling Images Only ${CYAN}(Untagged image layers)${NC}"
         echo -e "  ${GREEN}[5]${NC} ${BOLD}FULL DEEP CLEAN${NC} ${RED}(Prune ALL unused containers, images, volumes & caches)${NC}"
-        echo -e "  ${GREEN}[6]${NC} Return to Main Menu"
+        echo -e "  ${GREEN}[0]${NC} Return to Main Menu"
         echo -e "\n===================================================================="
-        read -p "Select prune option [1-6]: " PRUNE_CHOICE
+        read -r -p "Select prune option [0-5]: " PRUNE_CHOICE
 
         case $PRUNE_CHOICE in
             1)
                 echo -e "\n${GREEN}--> Cleaning Docker & Podman build caches...${NC}"
-                command -v docker &>/dev/null && docker builder prune -f
-                command -v podman &>/dev/null && podman builder prune -f || true
+                command -v docker &>/dev/null && _vmw_run_prune "Docker build cache pruned" docker builder prune -f
+                command -v podman &>/dev/null && _vmw_run_prune "Podman build cache pruned" podman builder prune -f
                 pause
                 ;;
             2)
                 echo -e "\n${GREEN}--> Cleaning unused persistent volumes...${NC}"
-                command -v docker &>/dev/null && docker volume prune -f
-                command -v podman &>/dev/null && podman volume prune -f || true
+                command -v docker &>/dev/null && _vmw_run_prune "Docker unused volumes pruned" docker volume prune -f
+                command -v podman &>/dev/null && _vmw_run_prune "Podman unused volumes pruned" podman volume prune -f
                 pause
                 ;;
             3)
                 echo -e "\n${GREEN}--> Removing stopped/inactive containers...${NC}"
-                command -v docker &>/dev/null && docker container prune -f
-                command -v podman &>/dev/null && podman container prune -f || true
+                command -v docker &>/dev/null && _vmw_run_prune "Docker stopped containers removed" docker container prune -f
+                command -v podman &>/dev/null && _vmw_run_prune "Podman stopped containers removed" podman container prune -f
                 pause
                 ;;
             4)
                 echo -e "\n${GREEN}--> Pruning dangling (untagged) images...${NC}"
-                command -v docker &>/dev/null && docker image prune -f
-                command -v podman &>/dev/null && podman image prune -f || true
+                command -v docker &>/dev/null && _vmw_run_prune "Docker dangling images pruned" docker image prune -f
+                command -v podman &>/dev/null && _vmw_run_prune "Podman dangling images pruned" podman image prune -f
                 pause
                 ;;
             5)
-                echo -e "\n${RED}${BOLD}--> Running FULL Container System Prune...${NC}"
-                command -v docker &>/dev/null && docker system prune -a --volumes -f
-                command -v podman &>/dev/null && podman system prune -a --volumes -f || true
+                echo -e "\n${RED}${BOLD}This removes ALL unused containers, images, volumes and build caches (Docker and Podman).${NC}"
+                echo -e "${RED}Anything not currently referenced by a running container will be deleted.${NC}"
+                read -r -p "Type YES to continue (anything else cancels): " FULL_PRUNE_CONFIRM
+                if [[ "$FULL_PRUNE_CONFIRM" == "YES" ]]; then
+                    echo -e "\n${RED}${BOLD}--> Running FULL Container System Prune...${NC}"
+                    command -v docker &>/dev/null && _vmw_run_prune "Docker full system prune complete" docker system prune -a --volumes -f
+                    command -v podman &>/dev/null && _vmw_run_prune "Podman full system prune complete" podman system prune -a --volumes -f
+                else
+                    echo "Cancelled."
+                fi
                 pause
                 ;;
-            6)
+            0)
                 break
                 ;;
             *)
@@ -213,113 +273,55 @@ clean_system() {
     clear
     show_header
     echo -e "${YELLOW}[+] Cleaning OS Package Manager Caches & System Logs...${NC}\n"
+    echo -e "This clears package caches/orphans, vacuums old journal logs, and clears"
+    echo -e "temp/thumbnail caches older than 1 day. It does not touch Docker/Podman data."
+    read -r -p "Proceed? (y/N): " SYS_CLEAN_CONFIRM
+    if [[ ! "$SYS_CLEAN_CONFIRM" =~ ^[Yy]$ ]]; then
+        echo "Cancelled."
+        pause
+        return 0
+    fi
 
     if command -v apt-get &> /dev/null; then
         echo -e "${GREEN}--> Running apt-get clean & autoremove...${NC}"
-        sudo apt-get clean && sudo apt-get autoremove -y
+        _vmw_run_prune "apt cache cleaned" sudo apt-get clean
+        _vmw_run_prune "unused apt packages removed" sudo apt-get autoremove -y
     elif command -v dnf &> /dev/null; then
         echo -e "${GREEN}--> Running dnf clean all & autoremove...${NC}"
-        sudo dnf clean all && sudo dnf autoremove -y
+        _vmw_run_prune "dnf cache cleaned" sudo dnf clean all
+        _vmw_run_prune "unused dnf packages removed" sudo dnf autoremove -y
     elif command -v yum &> /dev/null; then
         echo -e "${GREEN}--> Running yum clean all...${NC}"
-        sudo yum clean all
+        _vmw_run_prune "yum cache cleaned" sudo yum clean all
+    elif command -v pacman &> /dev/null; then
+        echo -e "${GREEN}--> Running pacman cache clean & orphan removal (Arch Linux)...${NC}"
+        _vmw_run_prune "pacman cache cleaned" sudo pacman -Sc --noconfirm
+        mapfile -t PACMAN_ORPHANS < <(pacman -Qtdq 2>/dev/null)
+        if (( ${#PACMAN_ORPHANS[@]} > 0 )); then
+            _vmw_run_prune "orphaned pacman packages removed" sudo pacman -Rns --noconfirm "${PACMAN_ORPHANS[@]}"
+        fi
+    elif command -v zypper &> /dev/null; then
+        echo -e "${GREEN}--> Running zypper cache clean (openSUSE)...${NC}"
+        _vmw_run_prune "zypper cache cleaned" sudo zypper clean --all
+    else
+        echo -e "${YELLOW}[!] No supported package manager (apt/dnf/yum/pacman/zypper) detected; skipping package cache cleanup.${NC}"
     fi
 
-    echo -e "${GREEN}--> Vacuuming systemd journal logs (retaining last 3 days)...${NC}"
-    sudo journalctl --vacuum-time=3d 2>/dev/null || true
+    if command -v journalctl &> /dev/null; then
+        echo -e "${GREEN}--> Vacuuming systemd journal logs (retaining last 3 days)...${NC}"
+        _vmw_run_prune "journal vacuumed" sudo journalctl --vacuum-time=3d
+    else
+        echo -e "${YELLOW}[!] systemd/journalctl not detected (non-systemd init?); skipping journal vacuum.${NC}"
+    fi
 
-    echo -e "${GREEN}--> Cleaning temporary runtime files and thumbnail caches...${NC}"
-    sudo rm -rf /tmp/* 2>/dev/null || true
+    echo -e "${GREEN}--> Cleaning temporary files older than 1 day (leaves active sockets/sessions alone)...${NC}"
+    sudo find /tmp -mindepth 1 -mmin +1440 \
+        ! -path '/tmp/.X11-unix*' ! -path '/tmp/.ICE-unix*' ! -path '/tmp/.font-unix*' \
+        ! -path '/tmp/.XIM-unix*' ! -path '/tmp/systemd-private-*' ! -path '/tmp/snap-private-tmp*' \
+        -exec sudo rm -rf {} + 2>/dev/null || true
     rm -rf ~/.cache/thumbnails/* 2>/dev/null || true
 
     echo -e "\n${GREEN}[✔] OS System Cleanup Complete!${NC}"
-    pause
-}
-
-setup_secondary_disk() {
-    clear
-    show_header
-    echo -e "${YELLOW}[+] Secondary Storage Partitioning & Data Offload Wizard${NC}"
-    echo -e "This module mounts an attached secondary disk and offloads Docker & Podman storage.\n"
-
-    echo -e "${CYAN}--- Currently Detected Block Devices ---${NC}"
-    lsblk -o NAME,SIZE,FSTYPE,MOUNTPOINTS
-    echo "----------------------------------------------------"
-
-    echo ""
-    read -p "Enter target block device for heavy storage (e.g., /dev/sdb): " TARGET_DISK
-
-    if [[ -z "$TARGET_DISK" ]] || [[ ! -b "$TARGET_DISK" ]]; then
-        echo -e "\n${RED}[!] Error: No valid block device specified!${NC}"
-        show_attachment_guidelines
-        pause
-        return
-    fi
-
-    ROOT_DISK=$(lsblk -no pkname $(findmnt -n -o SOURCE /))
-    TARGET_NAME=$(basename "$TARGET_DISK")
-    if [[ "$TARGET_NAME" == "$ROOT_DISK" ]]; then
-        echo -e "\n${RED}${BOLD}[CRITICAL SAFETY BLOCK] You selected '$TARGET_DISK' which contains your active Linux Root OS!${NC}"
-        echo -e "${RED}Modifying this drive would destroy your operating system.${NC}"
-        pause
-        return
-    fi
-
-    FS_TYPE=$(lsblk -no FSTYPE "$TARGET_DISK" | tr -d ' ')
-
-    if [[ -z "$FS_TYPE" ]]; then
-        echo -e "\n${YELLOW}[!] Drive '$TARGET_DISK' is unformatted.${NC}"
-        read -p "Would you like to format '$TARGET_DISK' with ext4 now? (y/N): " CONFIRM_FMT
-        if [[ "$CONFIRM_FMT" =~ ^[Yy]$ ]]; then
-            echo -e "${GREEN}--> Formatting $TARGET_DISK with ext4 filesystem...${NC}"
-            sudo mkfs.ext4 -F "$TARGET_DISK"
-        else
-            echo "Format cancelled. Cannot proceed without a formatted filesystem."
-            pause
-            return
-        fi
-    else
-        echo -e "\n${GREEN}[✔] Existing filesystem ($FS_TYPE) detected on $TARGET_DISK. Preserving data!${NC}"
-    fi
-
-    echo -e "${GREEN}--> Stopping container services...${NC}"
-    sudo systemctl stop docker 2>/dev/null || true
-
-    echo -e "${GREEN}--> Creating mount point at /var/lib/docker...${NC}"
-    sudo mkdir -p /var/lib/docker
-
-    IS_MOUNTED=$(findmnt -n -o TARGET "$TARGET_DISK" || true)
-    if [[ "$IS_MOUNTED" != "/var/lib/docker" ]]; then
-        echo -e "${GREEN}--> Mounting $TARGET_DISK to /var/lib/docker...${NC}"
-        sudo mount "$TARGET_DISK" /var/lib/docker
-    fi
-
-    echo -e "${GREEN}--> Updating /etc/fstab for persistent mount...${NC}"
-    UUID=$(sudo blkid -s UUID -o value "$TARGET_DISK")
-    
-    if ! grep -q "$UUID" /etc/fstab; then
-        echo "UUID=$UUID  /var/lib/docker  ext4  defaults  0  2" | sudo tee -a /etc/fstab
-    fi
-
-    sudo systemctl daemon-reload
-
-    if command -v podman &> /dev/null; then
-        echo -e "${GREEN}--> Configuring Podman storage path to secondary disk...${NC}"
-        sudo mkdir -p /var/lib/docker/podman-storage
-        sudo chmod 757 /var/lib/docker
-        sudo chown -R $USER:$USER /var/lib/docker/podman-storage
-        sudo chmod -R 777 /var/lib/docker/podman-storage
-
-        mkdir -p ~/.config/containers
-        cat <<EOF > ~/.config/containers/storage.conf
-[storage]
-driver = "overlay"
-graphroot = "/var/lib/docker/podman-storage"
-EOF
-    fi
-
-    sudo systemctl start docker 2>/dev/null || true
-    echo -e "\n${GREEN}[✔] SUCCESS: Docker and Podman are now fully connected to $TARGET_DISK!${NC}"
     pause
 }
 
@@ -331,11 +333,38 @@ prepare_vdi_compact() {
     echo "can reclaim physical disk space on your Windows PC."
     echo -e "${RED}${BOLD}Note: Disk utilization will reach 100% temporarily during zero-fill.${NC}\n"
 
-    read -p "Start Zero-Fill sequence? (y/N): " CONFIRM
+    # /tmp is tmpfs (RAM-backed) on many distros, including this one — writing the
+    # fill file there would fill RAM/swap and never touch the root disk's free
+    # blocks at all. Zero-fill a real on-disk directory instead, and verify it.
+    local fill_dir fill_fs fill_file
+    fill_dir="/var/tmp"
+    [[ -d "$fill_dir" ]] || fill_dir="/"
+    fill_fs=$(sudo stat -f -c %T "$fill_dir" 2>/dev/null || echo unknown)
+    if [[ "$fill_fs" == "tmpfs" || "$fill_fs" == "ramfs" ]]; then
+        fill_dir="/"
+        fill_fs=$(sudo stat -f -c %T "$fill_dir" 2>/dev/null || echo unknown)
+    fi
+    if [[ "$fill_fs" == "tmpfs" || "$fill_fs" == "ramfs" ]]; then
+        echo -e "${RED}[!] Both /var/tmp and / resolve to a RAM-backed filesystem ($fill_fs).${NC}"
+        echo -e "${RED}    Zero-filling here would fill RAM/swap, not your virtual disk. Aborting.${NC}"
+        pause
+        return 1
+    fi
+    fill_file="$fill_dir/.vmwizard-zero.fill"
+    echo -e "${CYAN}Zero-fill target: $fill_dir (filesystem: $fill_fs)${NC}"
+    df -h "$fill_dir"
+    echo ""
+
+    read -r -p "Start Zero-Fill sequence? (y/N): " CONFIRM
     if [[ "$CONFIRM" =~ ^[Yy]$ ]]; then
-        echo -e "\n${GREEN}--> Writing zeroes to unused disk blocks (please wait)...${NC}"
-        dd if=/dev/zero of=/tmp/zero.fill bs=1M status=progress 2>/dev/null || true
-        rm -f /tmp/zero.fill
+        if (( ${DRY_RUN:-0} )); then
+            echo -e "${CYAN}[dry-run]${NC} would run: dd if=/dev/zero of=$fill_file bs=1M status=progress; rm -f $fill_file; sudo shutdown -h now"
+            pause
+            return 0
+        fi
+        echo -e "\n${GREEN}--> Writing zeroes to unused disk blocks on $fill_dir (please wait)...${NC}"
+        sudo dd if=/dev/zero of="$fill_file" bs=1M status=progress 2>/dev/null || true
+        sudo rm -f "$fill_file"
 
         echo -e "\n${CYAN}====================================================================${NC}"
         echo -e "${GREEN}${BOLD}     STAGE 1 COMPLETE: LINUX SYSTEM ZERO-FILLED & PREPARED!        ${NC}"
@@ -343,9 +372,13 @@ prepare_vdi_compact() {
         echo -e "To reclaim physical storage on your Windows PC hard drive:\n"
         echo -e "  1. Open ${BOLD}Windows PowerShell${NC} as Administrator (or double-click autorun.bat)."
         echo -e "  2. Run Stage 2 to compact your ${GREEN}${BOLD}VirtualBox (.vdi)${NC} or ${GREEN}${BOLD}VMware (.vmdk)${NC} disks.\n"
-        echo -e "The VM will now gracefully shut down in 10 seconds..."
+        if command -v systemctl &>/dev/null; then
+            echo -e "The VM will now gracefully shut down in 10 seconds..."
+        else
+            echo -e "${YELLOW}No systemd detected; attempting 'shutdown -h now' anyway in 10 seconds...${NC}"
+        fi
         echo -e "${CYAN}====================================================================${NC}"
-        
+
         sleep 10
         sudo shutdown -h now
     else
@@ -365,16 +398,18 @@ while true; do
     echo -e "  ${GREEN}[2]${NC} Free Up OS System Space (Clean Package Caches & Logs)"
     echo -e "  ${GREEN}[3]${NC} Offload Docker & Podman Storage to Secondary HDD Drive"
     echo -e "  ${GREEN}[4]${NC} FULL CLEANUP + Zero-Fill for Host Disk Compaction (Stage 1)"
-    echo -e "  ${GREEN}[5]${NC} Exit"
+    echo -e "  ${GREEN}[5]${NC} Audit & Clean Up Leftover Storage After a Migration"
+    echo -e "  ${GREEN}[0]${NC} Exit"
     echo -e "\n===================================================================="
-    read -p "Enter choice [1-5]: " CHOICE
+    read -r -p "Enter choice [0-5]: " CHOICE
 
     case $CHOICE in
         1) clean_containers ;;
         2) clean_system ;;
         3) setup_secondary_disk ;;
         4) clean_system; clean_containers; prepare_vdi_compact ;;
-        5) echo -e "\n${GREEN}Goodbye!${NC}"; exit 0 ;;
+        5) docker_storage_audit ;;
+        0) echo -e "\n${GREEN}Goodbye!${NC}"; exit 0 ;;
         *) echo -e "\n${RED}Invalid option!${NC}"; sleep 1 ;;
     esac
 done

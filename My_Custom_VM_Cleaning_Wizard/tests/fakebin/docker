@@ -1,0 +1,419 @@
+#!/usr/bin/env bash
+# Fake docker CLI for tests/run-tests.sh. Never touches the real Docker daemon.
+# State lives under $FAKE_DOCKER_STATE:
+#   driver.txt, rootless.txt, snapshotter.txt, rootdir.txt, down
+#   images.db               - TSV "id<TAB>repo:tag" one row per (image,tag)
+#                              pair, exactly like real `docker image ls`; an
+#                              untagged/dangling id has a single
+#                              "id<TAB><none>:<none>" row.
+#   sizes.db                - TSV "id<TAB>bytes"; `image inspect --format
+#                              '{{.Size}}'` returns 0 for an id with no row.
+#   volumes.txt             - one volume name per line
+#   networks.txt            - one custom network name per line
+#   networks/<name>.json    - {"driver":...,"subnet":...}
+#   containers/<id>.json    - full `docker inspect`-shaped object (array-wrapped on output)
+# Enough surface to drive the overlay2/rsync path (image/container/volume
+# counts, write-test) and the btrfs/portable path (save/load preserving
+# tags exactly like real Docker does — by-name keeps the tag, by-id does
+# not — network create/connect, and container recreate via docker create
+# with entrypoint/cmd/user/privileged/caps/devices/memory/cpus/healthcheck)
+# for real, without a real daemon.
+set -euo pipefail
+# This stub (unlike real Docker, which never shells out to jq) uses jq to
+# maintain its own JSON state, so it must resolve jq by an absolute path —
+# not via $PATH — or tests that deliberately hide jq from PATH to exercise
+# the module's own python3 fallback would break this stub too, for a reason
+# that has nothing to do with the module under test.
+JQ_BIN="/usr/bin/jq"
+command -v "$JQ_BIN" &>/dev/null || JQ_BIN=$(PATH="/usr/bin:/bin:/usr/local/bin" command -v jq)
+STATE_DIR="${FAKE_DOCKER_STATE:?FAKE_DOCKER_STATE must be set}"
+mkdir -p "$STATE_DIR" "$STATE_DIR/containers" "$STATE_DIR/networks"
+touch "$STATE_DIR/images.db" "$STATE_DIR/sizes.db" "$STATE_DIR/volumes.txt" "$STATE_DIR/networks.txt"
+[[ -f "$STATE_DIR/rootdir.txt" ]] || echo "/var/lib/docker" > "$STATE_DIR/rootdir.txt"
+[[ -f "$STATE_DIR/driver.txt" ]] || echo "overlay2" > "$STATE_DIR/driver.txt"
+[[ -f "$STATE_DIR/rootless.txt" ]] || echo "0" > "$STATE_DIR/rootless.txt"
+[[ -f "$STATE_DIR/snapshotter.txt" ]] || echo "0" > "$STATE_DIR/snapshotter.txt"
+
+# Resolves an ID-or-NAME reference to its container JSON file, or prints
+# nothing if not found (mirrors real docker accepting either).
+_resolve_cfile() {
+    local ref="$1" f
+    if [[ -f "$STATE_DIR/containers/$ref.json" ]]; then
+        echo "$STATE_DIR/containers/$ref.json"
+        return 0
+    fi
+    for f in "$STATE_DIR"/containers/*.json; do
+        [[ -f "$f" ]] || continue
+        if [[ "$("$JQ_BIN" -r '.Name' "$f" 2>/dev/null)" == "/$ref" ]]; then
+            echo "$f"
+            return 0
+        fi
+    done
+    return 1
+}
+
+# Resolves an image reference (tag or id) to its id. Echoes the id and
+# returns 0 if known; for a ref that matches neither, synthesizes a stable
+# pseudo-id (so tests that don't bother pre-registering an image still get a
+# consistent, repeatable .Image id) and returns 1.
+_resolve_image_id() {
+    local ref="$1" hit
+    hit=$(awk -F'\t' -v r="$ref" '$2==r{print $1; exit}' "$STATE_DIR/images.db")
+    if [[ -n "$hit" ]]; then echo "$hit"; return 0; fi
+    if grep -q "^$ref"$'\t' "$STATE_DIR/images.db" 2>/dev/null; then echo "$ref"; return 0; fi
+    echo "sha256:synthetic$(printf '%s' "$ref" | cksum | cut -d' ' -f1)"
+    return 1
+}
+
+# True (0) if $1 is currently a known tag string in images.db.
+_is_known_tag() { awk -F'\t' -v r="$1" '$2==r{found=1} END{exit !found}' "$STATE_DIR/images.db"; }
+# True (0) if $1 is currently a known id (appears in column 1).
+_is_known_id() { awk -F'\t' -v r="$1" '$1==r{found=1} END{exit !found}' "$STATE_DIR/images.db"; }
+
+_image_add_tag() {
+    local id="$1" tag="$2" tmp
+    tmp=$(mktemp)
+    # Drop any pure <none>:<none> placeholder row for this id (it now has a
+    # real tag) and any pre-existing identical row, then add the new one.
+    awk -F'\t' -v id="$id" -v tag="$tag" '!(($1==id && $2=="<none>:<none>") || ($1==id && $2==tag))' "$STATE_DIR/images.db" > "$tmp" || true
+    mv "$tmp" "$STATE_DIR/images.db"
+    printf '%s\t%s\n' "$id" "$tag" >> "$STATE_DIR/images.db"
+}
+
+cmd="${1:-}"; shift || true
+
+case "$cmd" in
+    info)
+        if [[ "${1:-}" == "-f" ]]; then
+            case "${2:-}" in
+                *DockerRootDir*) cat "$STATE_DIR/rootdir.txt" ;;
+                '{{.Driver}}') cat "$STATE_DIR/driver.txt" ;;
+                *DriverStatus*)
+                    if [[ "$(cat "$STATE_DIR/snapshotter.txt")" == "1" ]]; then
+                        echo '[["driver-type","io.containerd.snapshotter.v1"]]'
+                    else
+                        echo '[]'
+                    fi
+                    ;;
+                *SecurityOptions*)
+                    if [[ "$(cat "$STATE_DIR/rootless.txt")" == "1" ]]; then
+                        echo '["name=rootless"]'
+                    else
+                        echo '["name=seccomp,profile=builtin"]'
+                    fi
+                    ;;
+            esac
+        fi
+        [[ -f "$STATE_DIR/down" ]] && exit 1
+        exit 0 ;;
+
+    image)
+        sub="${1:-}"; shift || true
+        case "$sub" in
+            ls)
+                if [[ "$*" == *'{{.ID}}'*'{{.Repository}}'* ]]; then
+                    # id<TAB>repo:tag, one row per (image,tag) pair — exactly
+                    # what the real module uses to build its tag map.
+                    cat "$STATE_DIR/images.db"
+                elif [[ "$*" == *"--format"* ]]; then
+                    # Legacy single-column tag format (mig_verify's write-test lookup).
+                    cut -f2 "$STATE_DIR/images.db"
+                else
+                    cut -f1 "$STATE_DIR/images.db" | sort -u
+                fi
+                ;;
+            inspect)
+                fmt=""; args=()
+                while (( $# )); do
+                    case "$1" in
+                        -f|--format) fmt="$2"; shift 2 ;;
+                        *) args+=("$1"); shift ;;
+                    esac
+                done
+                ref="${args[0]:-}"
+                id=$(_resolve_image_id "$ref") || true
+                if _is_known_tag "$ref" || _is_known_id "$ref"; then
+                    case "$fmt" in
+                        '{{.Size}}')
+                            awk -F'\t' -v id="$id" '$1==id{print $2; found=1} END{if(!found) print 0}' "$STATE_DIR/sizes.db"
+                            ;;
+                        *)
+                            tags_json=$(awk -F'\t' -v id="$id" '$1==id && $2!="<none>:<none>"{print $2}' "$STATE_DIR/images.db" | "$JQ_BIN" -R -s 'split("\n")|map(select(length>0))')
+                            "$JQ_BIN" -n --arg id "$id" --argjson tags "$tags_json" '[{Id:$id, RepoTags:$tags}]'
+                            ;;
+                    esac
+                else
+                    echo "[]"; exit 1
+                fi
+                ;;
+            tag)
+                src="${1:-}"; newtag="${2:-}"
+                id=$(_resolve_image_id "$src")
+                _image_add_tag "$id" "$newtag"
+                ;;
+        esac
+        ;;
+
+    tag)
+        # Top-level `docker tag SRC DST` — equivalent to `docker image tag`.
+        id=$(_resolve_image_id "${1:-}")
+        _image_add_tag "$id" "${2:-}"
+        ;;
+
+    save)
+        # docker save -o FILE REF... — mirrors real Docker exactly: saving by
+        # a TAG embeds that tag; saving by a bare ID embeds no tag at all,
+        # even if that id has tags elsewhere. This asymmetry is the whole
+        # bug Issue 1 fixes in the real module.
+        out=""; refs=()
+        while (( $# )); do
+            case "$1" in
+                -o) out="$2"; shift 2 ;;
+                *) refs+=("$1"); shift ;;
+            esac
+        done
+        [[ -n "$out" ]] || { echo "docker save: -o required" >&2; exit 1; }
+        : > "$out"
+        # Persisted independently of $out (which the real module deletes
+        # right after load, and which a test-fidelity gap — this fake has no
+        # concept of "the new root starts empty" — would otherwise let a
+        # stale pre-migration row mask) so a test can verify exactly what
+        # the save CALL was given: tag names (fixed) vs bare ids (the bug).
+        : > "$STATE_DIR/last_save.tsv"
+        for ref in "${refs[@]}"; do
+            if _is_known_tag "$ref"; then
+                id=$(_resolve_image_id "$ref")
+                printf 'TAG\t%s\t%s\n' "$ref" "$id" >> "$out"
+                printf 'TAG\t%s\t%s\n' "$ref" "$id" >> "$STATE_DIR/last_save.tsv"
+            else
+                id=$(_resolve_image_id "$ref")
+                printf 'ID\t%s\n' "$id" >> "$out"
+                printf 'ID\t%s\n' "$id" >> "$STATE_DIR/last_save.tsv"
+            fi
+        done
+        ;;
+
+    load)
+        # docker load -i FILE
+        in=""
+        while (( $# )); do
+            case "$1" in
+                -i) in="$2"; shift 2 ;;
+                *) shift ;;
+            esac
+        done
+        [[ -n "$in" && -f "$in" ]] || { echo "docker load: -i FILE required" >&2; exit 1; }
+        while IFS=$'\t' read -r kind a b; do
+            case "$kind" in
+                TAG) _image_add_tag "$b" "$a" ;;
+                ID)
+                    if ! _is_known_id "$a"; then
+                        printf '%s\t<none>:<none>\n' "$a" >> "$STATE_DIR/images.db"
+                    fi
+                    ;;
+            esac
+        done < "$in"
+        ;;
+
+    ps)
+        rootdir=$(cat "$STATE_DIR/rootdir.txt" 2>/dev/null || true)
+        if [[ "$*" == *"--filter"* ]]; then
+            exit 0
+        elif [[ "$*" == *"-aq"* ]]; then
+            # Union of containers created via `docker create` (JSON files) and
+            # plain directories rsync'd straight onto the new disk (the
+            # overlay2/rsync path never calls `docker create`, so it shows up
+            # here, not as a JSON file).
+            {
+                for f in "$STATE_DIR"/containers/*.json; do [[ -f "$f" ]] && basename "$f" .json; done
+                [[ -d "$rootdir/containers" ]] && find "$rootdir/containers" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null
+            } | sort -u
+        else
+            for f in "$STATE_DIR"/containers/*.json; do
+                [[ -f "$f" ]] || continue
+                [[ "$("$JQ_BIN" -r '.State.Running' "$f" 2>/dev/null)" == "true" ]] && basename "$f" .json
+            done
+        fi
+        ;;
+
+    volume)
+        sub="${1:-}"
+        rootdir=$(cat "$STATE_DIR/rootdir.txt" 2>/dev/null || true)
+        if [[ "$sub" == "ls" ]]; then
+            {
+                cat "$STATE_DIR/volumes.txt"
+                [[ -d "$rootdir/volumes" ]] && find "$rootdir/volumes" -mindepth 1 -maxdepth 1 -printf '%f\n' 2>/dev/null
+            } | sort -u
+        fi
+        ;;
+
+    network)
+        sub="${1:-}"; shift || true
+        case "$sub" in
+            ls)
+                cat "$STATE_DIR/networks.txt"
+                ;;
+            create)
+                driver="bridge"; subnet=""; name=""
+                while (( $# )); do
+                    case "$1" in
+                        --driver) driver="$2"; shift 2 ;;
+                        --subnet) subnet="$2"; shift 2 ;;
+                        *) name="$1"; shift ;;
+                    esac
+                done
+                echo "$name" >> "$STATE_DIR/networks.txt"
+                "$JQ_BIN" -n --arg d "$driver" --arg s "$subnet" '{driver:$d, subnet:$s}' > "$STATE_DIR/networks/$name.json"
+                echo "fakenet-$RANDOM"
+                ;;
+            inspect)
+                name="${1:-}"
+                if [[ -f "$STATE_DIR/networks/$name.json" ]]; then
+                    "$JQ_BIN" --arg n "$name" '[{Name:$n, Driver:.driver, IPAM:{Config:[{Subnet:.subnet}]}}]' "$STATE_DIR/networks/$name.json"
+                else
+                    echo "[]"
+                fi
+                ;;
+            connect)
+                net="${1:-}"; cref="${2:-}"
+                f=$(_resolve_cfile "$cref") || exit 1
+                "$JQ_BIN" --arg n "$net" '.NetworkSettings.Networks[$n] = {}' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+                ;;
+            disconnect)
+                net="${1:-}"; cref="${2:-}"
+                f=$(_resolve_cfile "$cref") || exit 1
+                "$JQ_BIN" --arg n "$net" 'del(.NetworkSettings.Networks[$n])' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+                ;;
+        esac
+        ;;
+
+    inspect)
+        fmt=""; args=()
+        while (( $# )); do
+            case "$1" in
+                -f|--format) fmt="$2"; shift 2 ;;
+                *) args+=("$1"); shift ;;
+            esac
+        done
+        for ref in "${args[@]}"; do
+            f=$(_resolve_cfile "$ref") || continue
+            case "$fmt" in
+                '{{.State.Running}}') "$JQ_BIN" -r '.State.Running' "$f" ;;
+                *'.Mounts'*)
+                    name=$("$JQ_BIN" -r '.Name' "$f")
+                    binds=$("$JQ_BIN" -r '(.Mounts // [])[] | select(.Type=="bind") | "  " + .Source' "$f" | tr -d '\n')
+                    echo "${name}${binds}"
+                    ;;
+                '{{json .}}'|'')
+                    "$JQ_BIN" '[.]' "$f"
+                    ;;
+                *) "$JQ_BIN" '[.]' "$f" ;;
+            esac
+        done
+        ;;
+
+    create)
+        name=""; image=""; env=(); restart=""; ports=(); mounts=(); labels=(); workdir=""
+        entrypoint=""; user=""; privileged=0; capadd=(); capdrop=(); devices=(); memory=""; cpus=""; healthcmd=""
+        cmd_args=(); image_seen=0
+        while (( $# )); do
+            case "$1" in
+                --name) name="$2"; shift 2 ;;
+                --env) env+=("$2"); shift 2 ;;
+                --restart) restart="$2"; shift 2 ;;
+                -p) ports+=("$2"); shift 2 ;;
+                -v) mounts+=("$2"); shift 2 ;;
+                --label) labels+=("$2"); shift 2 ;;
+                -w) workdir="$2"; shift 2 ;;
+                --entrypoint) entrypoint="$2"; shift 2 ;;
+                --user) user="$2"; shift 2 ;;
+                --privileged) privileged=1; shift ;;
+                --cap-add) capadd+=("$2"); shift 2 ;;
+                --cap-drop) capdrop+=("$2"); shift 2 ;;
+                --device) devices+=("$2"); shift 2 ;;
+                --memory) memory="$2"; shift 2 ;;
+                --cpus) cpus="$2"; shift 2 ;;
+                --health-cmd) healthcmd="$2"; shift 2 ;;
+                --pull) shift 2 ;;
+                -*) shift ;;
+                *)
+                    if (( ! image_seen )); then image="$1"; image_seen=1; else cmd_args+=("$1"); fi
+                    shift ;;
+            esac
+        done
+        newid="fakecid$RANDOM$RANDOM"
+        [[ -n "$name" ]] || name="$newid"
+        image_id=$(_resolve_image_id "$image" || true)
+
+        env_json=$(printf '%s\n' "${env[@]}" | "$JQ_BIN" -R -s 'split("\n") | map(select(length>0))')
+        labels_json=$(printf '%s\n' "${labels[@]}" | "$JQ_BIN" -R -s '
+            split("\n") | map(select(length>0) | split("=") | {(.[0]): (.[1:] | join("="))}) | add // {}')
+        mounts_json=$(printf '%s\n' "${mounts[@]}" | "$JQ_BIN" -R -s '
+            split("\n") | map(select(length>0)) | map(
+                (split(":")) as $p |
+                if ($p[0] | test("^/")) then
+                    {Type:"bind", Source:$p[0], Destination:$p[1], RW:(($p[2] // "rw") != "ro")}
+                else
+                    {Type:"volume", Name:$p[0], Destination:$p[1], RW:(($p[2] // "rw") != "ro")}
+                end)')
+        # Real Docker's PortBindings keys always carry the protocol (e.g.
+        # "80/tcp"), defaulting to tcp when -p doesn't specify one — match
+        # that exactly, since the real reconstruction logic this is faking
+        # for depends on that suffix being present.
+        ports_json=$(printf '%s\n' "${ports[@]}" | "$JQ_BIN" -R -s '
+            split("\n") | map(select(length>0) | split(":")) | map(
+                (.[-1] | split("/")) as $cp |
+                {(($cp[0]) + "/" + ($cp[1] // "tcp")):
+                    [{HostIp:(if length>2 then .[0] else "0.0.0.0" end), HostPort:(.[-2])}]}
+            ) | add // {}')
+        restart_json=$("$JQ_BIN" -n --arg r "${restart:-no}" '
+            ($r | split(":")) as $p | {Name:$p[0], MaximumRetryCount:(($p[1] // "0") | tonumber)}')
+        entrypoint_json=$(if [[ -n "$entrypoint" ]]; then "$JQ_BIN" -n --arg e "$entrypoint" '[$e]'; else echo 'null'; fi)
+        cmd_json=$(printf '%s\n' "${cmd_args[@]}" | "$JQ_BIN" -R -s 'split("\n") | map(select(length>0))')
+        capadd_json=$(printf '%s\n' "${capadd[@]}" | "$JQ_BIN" -R -s 'split("\n") | map(select(length>0))')
+        capdrop_json=$(printf '%s\n' "${capdrop[@]}" | "$JQ_BIN" -R -s 'split("\n") | map(select(length>0))')
+        devices_json=$(printf '%s\n' "${devices[@]}" | "$JQ_BIN" -R -s '
+            split("\n") | map(select(length>0) | split(":")) | map({PathOnHost:.[0], PathInContainer:(.[1] // .[0])})')
+        healthcheck_json=$(if [[ -n "$healthcmd" ]]; then "$JQ_BIN" -n --arg h "$healthcmd" '{Test:["CMD-SHELL",$h]}'; else echo 'null'; fi)
+
+        "$JQ_BIN" -n \
+            --arg name "/$name" --arg image "$image" --arg imageid "$image_id" --arg workdir "$workdir" \
+            --arg user "$user" --argjson privileged "$( (( privileged )) && echo true || echo false )" \
+            --arg memory "${memory:-0}" --arg cpus "${cpus:-0}" \
+            --argjson env "$env_json" --argjson labels "$labels_json" \
+            --argjson mounts "$mounts_json" --argjson portb "$ports_json" \
+            --argjson restart "$restart_json" --argjson entrypoint "$entrypoint_json" --argjson cmd "$cmd_json" \
+            --argjson capadd "$capadd_json" --argjson capdrop "$capdrop_json" --argjson devices "$devices_json" \
+            --argjson healthcheck "$healthcheck_json" '
+            {
+                Id: "'"$newid"'",
+                Name: $name,
+                Image: $imageid,
+                State: {Running: false},
+                Config: {
+                    Image: $image, Env: $env, Labels: $labels, WorkingDir: $workdir,
+                    Entrypoint: $entrypoint, Cmd: $cmd, User: $user, Healthcheck: $healthcheck
+                },
+                HostConfig: {
+                    RestartPolicy: $restart, PortBindings: $portb, Privileged: $privileged,
+                    CapAdd: $capadd, CapDrop: $capdrop, Devices: $devices,
+                    Memory: ($memory | tonumber), NanoCpus: (($cpus | tonumber) * 1000000000)
+                },
+                Mounts: $mounts,
+                NetworkSettings: {Networks: {bridge: {}}}
+            }' > "$STATE_DIR/containers/$newid.json"
+        echo "$newid"
+        ;;
+
+    start)
+        f=$(_resolve_cfile "${1:-}") || exit 1
+        "$JQ_BIN" '.State.Running = true' "$f" > "$f.tmp" && mv "$f.tmp" "$f"
+        exit 0 ;;
+
+    rm)
+        f=$(_resolve_cfile "${1:-}") || exit 0
+        rm -f "$f"
+        exit 0 ;;
+
+    *) exit 0 ;;
+esac
