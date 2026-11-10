@@ -30,10 +30,10 @@ echo.
 echo Which stage of the cleanup process are you currently executing?
 echo.
 echo   [1] Stage 1: Linux System Cleanup
-echo   [2] Stage 2: Windows Host VDI / VMDK Compaction (RUN HERE)
-echo   [3] Exit
+echo   [2] Stage 2: Windows Host VDI/VMDK Compaction + Docker Desktop/Podman Relocation
+echo   [0] Exit
 echo ====================================================================
-set /p CHOICE="Select option [1-3]: "
+set /p CHOICE="Select option [0-2]: "
 
 if "%CHOICE%"=="1" (
     cls
@@ -71,7 +71,7 @@ if "%CHOICE%"=="2" (
     goto end
 )
 
-if "%CHOICE%"=="3" (
+if "%CHOICE%"=="0" (
     exit
 )
 
